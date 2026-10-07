@@ -41,8 +41,11 @@ def current() -> Context:
 
 
 @contextmanager
-def context(*, user_id: Any = None, task_id: Any = None, parent_id: Any = None) -> Generator[Context, None, None]:
-    """Values left out are kept from the outer context."""
+def context(
+    *, user_id: Any = None, task_id: Any = None, parent_id: Any = None, flush: bool = False
+) -> Generator[Context, None, None]:
+    """Values left out are kept from the outer context. flush=True sends what's waiting when the
+    block ends: for runtimes that freeze the process after the response (see _client.py)."""
     given = {"user_id": user_id, "task_id": task_id, "parent_id": parent_id}
     changes = {k: c for k, v in given.items() if v is not None and (c := _clean(v)) is not None}
     token = _current.set(replace(_current.get(), **changes))
@@ -50,6 +53,10 @@ def context(*, user_id: Any = None, task_id: Any = None, parent_id: Any = None) 
         yield _current.get()
     finally:
         _current.reset(token)
+        if flush:
+            from ._client import flush as _flush
+
+            _flush()
 
 
 def carry() -> dict[str, str]:
@@ -64,8 +71,12 @@ def restore(data: Any) -> Generator[Context, None, None]:
     Anything missing or malformed is ignored: a bad field never breaks the request."""
     if isinstance(data, Mapping) and isinstance(data.get(CARRY_FIELD), Mapping):
         data = data[CARRY_FIELD]
-    values = {k: data.get(k) for k in _KEYS} if isinstance(data, Mapping) else {}
-    with context(**{k: v for k, v in values.items() if isinstance(v, (str, int))}) as ctx:
+
+    def get(key: str) -> str | int | None:
+        value = data.get(key) if isinstance(data, Mapping) else None
+        return value if isinstance(value, (str, int)) else None
+
+    with context(user_id=get("user_id"), task_id=get("task_id"), parent_id=get("parent_id")) as ctx:
         yield ctx
 
 
