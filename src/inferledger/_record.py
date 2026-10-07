@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .context import current as _current_context
+from ._context import current as _current_context
 
 Phase = Literal["call", "start", "finish"]
 Status = Literal["ok", "error"]
