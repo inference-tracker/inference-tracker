@@ -30,7 +30,8 @@ Status = Literal["ok", "error"]
 @dataclass
 class Record:
     provider: str  # "fal", "gcp.vertex_ai", "openai", "azure.ai.openai", "aws.bedrock"
-    model: str  # model or endpoint, e.g. "fal-ai/kling-video/v2.6/pro/motion-control"
+    model: str | None  # model or endpoint, e.g. "fal-ai/kling-video/v2.6/pro/motion-control"; None only on a
+    # "finish" record made where the model isn't known (a webhook): the start record has it
     phase: Phase = "call"
     request_id: str | None = None  # the provider's id for this call: how the bill is matched
     status: Status | None = None  # None on a "start" record
