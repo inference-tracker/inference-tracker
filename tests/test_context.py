@@ -11,8 +11,8 @@ def test_empty_by_default():
 
 def test_nested_context_keeps_outer_values_and_resets():
     with context(user_id="u1", task_id="t1"):
-        with context(parent_id="req-9"):
-            assert current() == inferledger.Context("u1", "t1", "req-9")
+        with context(parent_id="rec-9"):
+            assert current() == inferledger.Context("u1", "t1", "rec-9")
         with context(task_id="t2"):
             assert current().task_id == "t2"
             assert current().user_id == "u1"

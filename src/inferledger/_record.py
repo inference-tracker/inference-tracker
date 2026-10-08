@@ -49,7 +49,7 @@ class Record:
     # Filled from the current context when the record is made.
     user_id: str | None = None
     task_id: str | None = None
-    parent_id: str | None = None
+    parent_id: str | None = None  # the `id` of the record of the call that made this one
     id: str = field(default_factory=lambda: uuid.uuid4().hex)  # lets the server drop duplicates
     recorded_at: float = field(default_factory=time.time)
 

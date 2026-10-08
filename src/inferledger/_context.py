@@ -29,7 +29,9 @@ _MAX_LEN = 256
 class Context:
     user_id: str | None = None
     task_id: str | None = None
-    # The provider request id of the call that made this one (a workflow, our own fal app).
+    # Our record id of the call that made this one: when one of our fal apps makes calls of its own,
+    # the carry puts the outer call's record id here. Never a provider's request id (those are only
+    # unique within one provider; a field for them would be a separate parent_request_id).
     parent_id: str | None = None
 
 

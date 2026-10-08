@@ -4,9 +4,11 @@ from inferledger import Record, context, error_name
 
 
 def test_new_record_takes_the_current_context():
-    with context(user_id="u1", task_id="t1", parent_id="req-parent"):
+    outer = Record.new("fal", "acme/prod-myapp-image-synthesis", phase="start", request_id="req-0")
+    with context(user_id="u1", task_id="t1", parent_id=outer.id):
         r = Record.new("fal", "fal-ai/flux/dev", request_id="req-1", status="ok")
-    assert (r.user_id, r.task_id, r.parent_id) == ("u1", "t1", "req-parent")
+    assert (r.user_id, r.task_id) == ("u1", "t1")
+    assert r.parent_id == outer.id  # our id of the parent record, not the provider's request id
     assert len(r.id) == 32
 
 
