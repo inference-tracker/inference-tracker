@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 import inferledger
-from inferledger import CARRY_FIELD, Record, context, restore
+from inferledger import Record, context
 from inferledger.fal import track, webhook
 
 # --- stand-ins for fal_client ----------------------------------------------------------------
@@ -346,26 +346,7 @@ def test_run_that_fails_is_one_failed_call(sent):
     assert phases(sent) == [("call", "run-1", "error")]
 
 
-# --- carry to our own apps ---------------------------------------------------------------------
-
-
-def test_our_own_apps_get_the_context_and_this_call_as_parent(sent):
-    fal = FalClient()
-    client = track(fal, carry_to=["acme/"])
-    with context(user_id="u1", task_id="t1"):
-        client.submit("acme/prod-myapp-image-synthesis", arguments=ARGS)
-        client.submit("fal-ai/flux/dev", arguments=ARGS)
-
-    own, public = fal.calls
-    assert own[2][CARRY_FIELD] == {"user_id": "u1", "task_id": "t1", "parent_id": sent[0].id}
-    assert {k: v for k, v in own[2].items() if k != CARRY_FIELD} == ARGS
-    assert CARRY_FIELD not in ARGS  # the app's dict isn't changed
-    assert CARRY_FIELD not in public[2]  # fal's public models get exactly what the app sent
-
-    # Inside our app, the carried context makes the inner call a child of the outer one:
-    with restore(own[2]):
-        inner = Record.new("gcp.vertex_ai", "veo-3.1-fast")
-    assert (inner.user_id, inner.task_id, inner.parent_id) == ("u1", "t1", sent[0].id)
+# --- settings --------------------------------------------------------------------------------------
 
 
 def test_settings_can_be_chosen(sent):
@@ -399,7 +380,7 @@ def test_a_broken_tracker_does_not_break_the_call(sent, monkeypatch, caplog):
 
 def test_arguments_that_are_not_a_dict_are_left_alone(sent):
     fal = FalClient()
-    client = track(fal, carry_to=["acme/"])
+    client = track(fal)
     client.submit("acme/app", arguments=["not", "a", "dict"])
     assert fal.calls[0][2] == ["not", "a", "dict"]
     assert sent[0].settings == {}
@@ -411,14 +392,14 @@ def test_arguments_that_are_not_a_dict_are_left_alone(sent):
 def test_async_submit_iter_events_and_get(sent):
     async def main():
         fal = AsyncFalClient()
-        client = track(fal, carry_to=["acme/"])
+        client = track(fal)
         with context(user_id="u1", task_id="t1"):
             handle = await client.submit("acme/prod-myapp-image-synthesis", arguments=ARGS)
             async for _event in handle.iter_events(interval=0):
                 pass
             result = await handle.get()
         assert result == {"images": [{"url": "u"}]}
-        assert CARRY_FIELD in fal.calls[0][2]
+        assert fal.calls[0][2] is ARGS
         assert handle.response_url.endswith("req-1")
 
     asyncio.run(main())

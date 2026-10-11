@@ -1,22 +1,23 @@
 import asyncio
 
 import inferledger
-from inferledger import CARRY_FIELD, carry, context, current, restore
+from inferledger import Record, context, current
 
 
 def test_empty_by_default():
     assert current() == inferledger.Context()
-    assert carry() == {}
 
 
 def test_nested_context_keeps_outer_values_and_resets():
     with context(user_id="u1", task_id="t1"):
-        with context(parent_id="rec-9"):
-            assert current() == inferledger.Context("u1", "t1", "rec-9")
+        with context(parent_provider="fal", parent_request_id="req-9"):
+            assert current() == inferledger.Context("u1", "t1", "fal", "req-9")
+            with context(parent_request_id="req-10"):
+                assert current() == inferledger.Context("u1", "t1", "fal", "req-10")
         with context(task_id="t2"):
             assert current().task_id == "t2"
             assert current().user_id == "u1"
-        assert current() == inferledger.Context("u1", "t1", None)
+        assert current() == inferledger.Context("u1", "t1")
     assert current() == inferledger.Context()
 
 
@@ -24,8 +25,9 @@ def test_values_become_short_strings():
     with context(user_id=12345, task_id="  "):
         assert current().user_id == "12345"
         assert current().task_id is None
-    with context(user_id="x" * 1000):
+    with context(user_id="x" * 1000, parent_request_id=" req-1 "):
         assert current().user_id == "x" * 256
+        assert current().parent_request_id == "req-1"
 
 
 def test_concurrent_requests_keep_their_own_context():
@@ -45,20 +47,9 @@ def test_concurrent_requests_keep_their_own_context():
     assert asyncio.run(main()) == [("u0", "u0"), ("u1", "u1"), ("u2", "u2")]
 
 
-def test_carry_and_restore_across_a_request():
-    with context(user_id="u1", task_id="t1"):
-        request_input = {"prompt_id": 7, CARRY_FIELD: carry()}
-    assert current().user_id is None
-
-    # The service on the other side, given the whole input
-    with restore(request_input):
-        assert current() == inferledger.Context("u1", "t1", None)
-    # or just the carried part
-    with restore({"user_id": "u1"}):
-        assert current().user_id == "u1"
-
-
-def test_restore_ignores_bad_input():
-    for bad in (None, "text", 42, [], {CARRY_FIELD: "oops"}, {"user_id": {"nested": 1}}):
-        with restore(bad):
-            assert current() == inferledger.Context()
+def test_a_call_made_inside_another_names_it_as_parent():
+    # One of our fal apps, serving fal's request req-9, calls a model of its own.
+    with context(parent_provider="fal", parent_request_id="req-9"):
+        inner = Record.new("gcp.vertex_ai", "veo-3.1-fast", request_id="op-1")
+    assert (inner.parent_provider, inner.parent_request_id) == ("fal", "req-9")
+    assert inner.user_id is None  # the server finds the user by walking up to the parent

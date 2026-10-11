@@ -3,14 +3,13 @@
     import fal_client
     import inferledger
 
-    client = inferledger.fal.track(fal_client.AsyncClient(key=...), carry_to=["acme/"])
+    client = inferledger.fal.track(fal_client.AsyncClient(key=...))
     handle = await client.submit("fal-ai/kling-video/v2.6/pro/motion-control", arguments=args)
     result = await handle.get()
 
 The tracked client has every method of the one it wraps; what isn't listed below (upload, status,
-cancel, stream, realtime...) passes through unchanged. The call itself is never changed, except that
-the context is added to the arguments of our own apps (see carry_to). Tracking never raises: a problem
-in it is logged and the call goes on as if nothing happened.
+cancel, stream, realtime...) passes through unchanged. The call itself is never changed. Tracking never
+raises: a problem in it is logged and the call goes on as if nothing happened.
 
 What is recorded, one record for each part of a call this process sees:
 
@@ -30,12 +29,6 @@ gave up waiting.
 
 Settings: of the arguments, only those named in `settings` are copied, the ones that change the price
 (resolution, duration, number of images...). Never the whole input: prompts and media URLs stay out.
-
-carry_to: our own fal apps make inference calls of their own. For applications whose name equals or
-starts with a name in carry_to, the current context goes into the arguments under CARRY_FIELD, with
-this call's record id as parent_id. The app restores it with inferledger.restore(input), and its own
-tracked calls then carry the same user and task, and this call as their parent. Never list fal's
-public models here: they may refuse an argument they don't know.
 """
 
 from __future__ import annotations
@@ -50,7 +43,6 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from . import _client
-from ._context import CARRY_FIELD, carry
 from ._record import Record, error_name
 
 logger = logging.getLogger("inferledger")
@@ -76,9 +68,9 @@ SETTINGS = (
 MAX_OPEN = 1000
 
 
-def track(client: Any, *, settings: Iterable[str] = SETTINGS, carry_to: Iterable[str] = ()) -> Any:
+def track(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     """Wraps a fal_client.SyncClient or fal_client.AsyncClient. See the module docstring."""
-    tracker = _Tracker(settings, carry_to)
+    tracker = _Tracker(settings)
     is_async = inspect.iscoroutinefunction(getattr(client, "submit", None))
     return _AsyncClient(client, tracker) if is_async else _Client(client, tracker)
 
@@ -168,7 +160,8 @@ class _Call:
                 units=self._units(),
                 user_id=start.user_id,
                 task_id=start.task_id,
-                parent_id=start.parent_id,
+                parent_provider=start.parent_provider,
+                parent_request_id=start.parent_request_id,
             )
         )
 
@@ -193,22 +186,18 @@ class _Call:
 class _Tracker:
     """Shared by the sync and async wrappers: starts calls and remembers the open ones."""
 
-    def __init__(self, settings: Iterable[str], carry_to: Iterable[str]):
+    def __init__(self, settings: Iterable[str]):
         self.settings = tuple(settings)
-        self.carry_to = tuple(carry_to)
         self._open: OrderedDict[str, _Call] = OrderedDict()
         self._lock = threading.Lock()
 
-    def start(self, application: str, arguments: Any) -> tuple[_Call | None, Any]:
-        """Before the call: its record, and the arguments to send (with the carry for our own apps)."""
+    def start(self, application: str, arguments: Any) -> _Call | None:
+        """Before the call: its record."""
         try:
-            call = _Call(application, arguments if isinstance(arguments, Mapping) else {}, self.settings)
-            if isinstance(arguments, Mapping) and any(application.startswith(name) for name in self.carry_to):
-                arguments = {**arguments, CARRY_FIELD: {**carry(), "parent_id": call.record.id}}
-            return call, arguments
+            return _Call(application, arguments if isinstance(arguments, Mapping) else {}, self.settings)
         except Exception:
             logger.exception("inferledger: could not start tracking a fal call")
-            return None, arguments
+            return None
 
     def submitted(self, call: _Call | None, request_id: str, *, keep: bool) -> None:
         if call is None:
@@ -308,7 +297,7 @@ class _Client:
         return getattr(self._client, name)
 
     def submit(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         try:
             handle = self._client.submit(application, arguments, **kwargs)
         except BaseException as e:
@@ -319,7 +308,7 @@ class _Client:
         return self._handle_class(handle, call, self._tracker)
 
     def subscribe(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         kwargs["on_enqueue"] = self._on_enqueue(call, kwargs.get("on_enqueue"))
         try:
             result = self._client.subscribe(application, arguments, **kwargs)
@@ -330,7 +319,7 @@ class _Client:
         return result
 
     def run(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         if not self._watching:
             self._watching = True
             _watch_request_ids(getattr(self._client, "_client", None), is_async=False)
@@ -398,7 +387,7 @@ class _AsyncClient(_Client):
     _handle_class = _AsyncHandle
 
     async def submit(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         try:
             handle = await self._client.submit(application, arguments, **kwargs)
         except BaseException as e:
@@ -408,7 +397,7 @@ class _AsyncClient(_Client):
         return self._handle_class(handle, call, self._tracker)
 
     async def subscribe(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         kwargs["on_enqueue"] = self._on_enqueue(call, kwargs.get("on_enqueue"))
         try:
             result = await self._client.subscribe(application, arguments, **kwargs)
@@ -419,7 +408,7 @@ class _AsyncClient(_Client):
         return result
 
     async def run(self, application: str, arguments: Any, **kwargs: Any) -> Any:
-        call, arguments = self._tracker.start(application, arguments)
+        call = self._tracker.start(application, arguments)
         if not self._watching:
             self._watching = True
             http = getattr(self._client, "_client", None)

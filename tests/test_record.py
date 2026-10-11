@@ -4,11 +4,13 @@ from inferledger import Record, context, error_name
 
 
 def test_new_record_takes_the_current_context():
-    outer = Record.new("fal", "acme/prod-myapp-image-synthesis", phase="start", request_id="req-0")
-    with context(user_id="u1", task_id="t1", parent_id=outer.id):
+    with context(user_id="u1", task_id="t1", parent_provider="fal", parent_request_id="req-0"):
         r = Record.new("fal", "fal-ai/flux/dev", request_id="req-1", status="ok")
     assert (r.user_id, r.task_id) == ("u1", "t1")
-    assert r.parent_id == outer.id  # our id of the parent record, not the provider's request id
+    # The parent as the provider knows it: provider + request id
+    assert (r.parent_provider, r.parent_request_id) == ("fal", "req-0")
+    assert r.to_wire()["parent_provider"] == "fal" and r.to_wire()["parent_request_id"] == "req-0"
+    assert "parent_id" not in r.to_wire()
     assert len(r.id) == 32
 
 
@@ -27,6 +29,7 @@ def test_wire_format_uses_otel_names_and_drops_empty_fields():
     assert wire["gen_ai.response.id"] == "resp-1"
     assert wire["units"] == {"input_tokens": 120, "output_tokens": 1120}
     assert "user_id" not in wire and "settings" not in wire and "error.type" not in wire
+    assert "parent_provider" not in wire and "parent_request_id" not in wire
     json.dumps(wire)  # always valid JSON
 
 

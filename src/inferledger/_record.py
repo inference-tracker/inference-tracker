@@ -9,6 +9,9 @@ when it is sent and a "finish" record when the result comes back. The server joi
 them on provider + request_id. A call seen from start to end in one place is one
 "call" record.
 
+A call made by another call (a step of a fal workflow, a model called by one of our fal
+apps) names that call as its parent the same way: parent_provider + parent_request_id.
+
 On the wire, fields that OpenTelemetry's GenAI conventions name use those names.
 """
 
@@ -50,7 +53,9 @@ class Record:
     # Filled from the current context when the record is made.
     user_id: str | None = None
     task_id: str | None = None
-    parent_id: str | None = None  # the `id` of the record of the call that made this one
+    # The call that made this one, as its provider knows it (e.g. "fal" and fal's request id).
+    parent_provider: str | None = None
+    parent_request_id: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)  # lets the server drop duplicates
     recorded_at: float = field(default_factory=time.time)
 
@@ -59,7 +64,8 @@ class Record:
         ctx = _current_context()
         fields.setdefault("user_id", ctx.user_id)
         fields.setdefault("task_id", ctx.task_id)
-        fields.setdefault("parent_id", ctx.parent_id)
+        fields.setdefault("parent_provider", ctx.parent_provider)
+        fields.setdefault("parent_request_id", ctx.parent_request_id)
         return cls(provider=provider, model=model, **fields)
 
     def to_wire(self) -> dict:
@@ -80,7 +86,8 @@ class Record:
             "attempt": self.attempt,
             "user_id": self.user_id,
             "task_id": self.task_id,
-            "parent_id": self.parent_id,
+            "parent_provider": self.parent_provider,
+            "parent_request_id": self.parent_request_id,
         }
         return {k: v for k, v in wire.items() if v is not None and v != {}}
 
