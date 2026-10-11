@@ -32,6 +32,13 @@ Settings: of the arguments, only those named in `settings` are copied, the ones 
 
 Our own fal apps make calls of their own. In the app's endpoint, inside(self) makes the request the app
 is serving the parent of every tracked call in the block.
+
+Workflows: submitted with the header WORKFLOW_ENVELOPE_HEADER set to "true" (the app adds it; this module
+never does), a fal workflow's result comes back as {output, nodes}, where nodes holds the endpoint and
+request id of each step that ran. Each step then gets a "call" record with the run as its parent, from
+webhook(body) and from a result fetched here with get(), client.result() or subscribe(). On a failed run
+(seen only by webhook(): a failed result raises in fal_client), the step named by node_id failed and the
+others that ran worked. A step that fell back to another model also gets a record for the failed attempt.
 """
 
 from __future__ import annotations
@@ -54,6 +61,8 @@ logger = logging.getLogger("inferledger")
 
 PROVIDER = "fal"
 REQUEST_ID_HEADER = "x-fal-request-id"
+# Sent as "true" on submit, it makes a workflow's result {output, nodes}. The app sends it, never this module.
+WORKFLOW_ENVELOPE_HEADER = "X-Fal-Workflow-Envelope"
 
 # Arguments copied onto the record because they change the price. Pass settings=[...] to track() for others.
 SETTINGS = (
@@ -110,8 +119,10 @@ def _current_request_id(app: Any) -> str | None:
 def webhook(body: Any, *, model: str | None = None) -> Record | None:
     """Records the "finish" of a call whose result fal sent to a webhook. `body` is the webhook's JSON
     body (request_id, status "OK" or "ERROR", payload...). The application isn't in it; pass `model`
-    when you know it, otherwise the server takes it from the start record. Call it inside the user's
-    context when the user is known. Returns the record, or None when the body has no request id."""
+    when you know it, otherwise the server takes it from the start record. When the call is a workflow
+    run with its steps in the payload, each step gets a record too (see the module docstring). Call it
+    inside the user's context when the user is known. Returns the finish record, or None when the body
+    has no request id."""
     try:
         request_id = body.get("request_id") if isinstance(body, Mapping) else None
         if not isinstance(request_id, str) or not request_id:
@@ -126,23 +137,79 @@ def webhook(body: Any, *, model: str | None = None) -> Record | None:
             error_type=None if ok else _webhook_error_type(body),
         )
         _client.record(record)
-        return record
     except Exception:
         logger.exception("inferledger: could not record a fal webhook")
         return None
+    _safe(_record_steps, body.get("payload"), request_id, error_type=record.error_type)
+    return record
 
 
 def _webhook_error_type(body: Mapping[str, Any]) -> str:
-    """fal puts the failure under payload.detail as [{type, msg, error_code, loc}]. The code or type is
-    taken, never the message."""
-    payload = body.get("payload")
-    details = payload.get("detail") if isinstance(payload, Mapping) else None
-    first = details[0] if isinstance(details, list) and details else None
-    if isinstance(first, Mapping):
+    """fal puts the failure in a `detail` list, [{type, msg, error_code, loc}]: under payload for an app,
+    deeper for a workflow (payload.error.body.detail). The code or type is taken, never the message."""
+    first = _first_detail(body.get("payload"))
+    if first is not None:
         for key in ("error_code", "type"):
             if isinstance(first.get(key), str) and first[key]:
                 return first[key]
     return "error"
+
+
+def _first_detail(data: Any, depth: int = 0) -> Mapping[str, Any] | None:
+    """The first entry of the first `detail` list found in `data`, looking only through dicts. The depth
+    is capped so that a dict that holds itself can't loop."""
+    if not isinstance(data, Mapping) or depth > 20:
+        return None
+    details = data.get("detail")
+    if isinstance(details, list) and details and isinstance(details[0], Mapping):
+        return details[0]
+    for value in data.values():
+        if (found := _first_detail(value, depth + 1)) is not None:
+            return found
+    return None
+
+
+# --- workflow steps --------------------------------------------------------------------------------
+
+
+def _record_steps(result: Any, run_id: Any, *, error_type: str | None = None, **fields: Any) -> None:
+    """One "call" record for each step in a workflow result's `nodes`, with the run as parent. error_type
+    is given for a failed run: it goes on the step named by node_id. `fields` (user, task) go on every record."""
+    nodes = result.get("nodes") if isinstance(result, Mapping) else None
+    if not isinstance(nodes, Mapping) or not isinstance(run_id, str) or not run_id:
+        return
+    if error_type is None and "output" not in result:
+        return  # a successful run's result has both; anything else is an app's own output
+    failed_node = result.get("node_id") if error_type else None
+    for key, node in nodes.items():
+        if not isinstance(node, Mapping):
+            continue
+        fallback = node.get("fallback")
+        if isinstance(fallback, Mapping):  # the step's first model failed and another one did the step
+            reason = fallback.get("reason")
+            failed = reason if isinstance(reason, str) and reason else "error"
+            _record_step(fallback.get("failed_endpoint"), fallback.get("failed_request_id"), run_id, failed, fields)
+        step_error = error_type if key == failed_node else None
+        _record_step(node.get("endpoint"), node.get("request_id"), run_id, step_error, fields)
+
+
+def _record_step(endpoint: Any, request_id: Any, run_id: str, error_type: str | None, fields: dict) -> None:
+    """A step without a request id can't be matched to the bill: it isn't recorded. The endpoint is kept as
+    fal gives it, case included."""
+    if not isinstance(request_id, str) or not request_id:
+        return
+    _client.record(
+        Record.new(
+            PROVIDER,
+            endpoint if isinstance(endpoint, str) else None,
+            request_id=request_id,
+            status="error" if error_type else "ok",
+            error_type=error_type,
+            parent_provider=PROVIDER,
+            parent_request_id=run_id,
+            **fields,
+        )
+    )
 
 
 # --- one call ----------------------------------------------------------------------------------
@@ -175,7 +242,8 @@ class _Call:
             if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
                 self.inference_seconds = float(seconds)
 
-    def finish(self, error_type: str | None) -> None:
+    def finish(self, error_type: str | None, result: Any = None) -> None:
+        """`result` is what fal returned, for the steps of a workflow run."""
         if self.done:
             return
         self.done = True
@@ -196,6 +264,8 @@ class _Call:
                 parent_request_id=start.parent_request_id,
             )
         )
+        if result is not None:
+            _record_steps(result, start.request_id, user_id=start.user_id, task_id=start.task_id)
 
     def completed(self, request_id: str | None, error_type: str | None) -> None:
         """The whole call seen here (run(), or a submit that failed): one "call" record."""
@@ -245,10 +315,10 @@ class _Tracker:
         with self._lock:
             return self._open.pop(request_id, None)
 
-    def finish(self, call: _Call | None, error_type: str | None) -> None:
+    def finish(self, call: _Call | None, error_type: str | None, result: Any = None) -> None:
         if call is not None:
             self.take(call.record.request_id)
-            call.finish(error_type)
+            call.finish(error_type, result)
 
 
 # --- the wrappers ----------------------------------------------------------------------------------
@@ -279,7 +349,7 @@ class _Handle:
         except BaseException as e:
             _safe(self._tracker.finish, self._call, _error_type(e))
             raise
-        _safe(self._tracker.finish, self._call, None)
+        _safe(self._tracker.finish, self._call, None, result)
         return result
 
     def cancel(self) -> None:
@@ -308,7 +378,7 @@ class _AsyncHandle(_Handle):
         except BaseException as e:
             _safe(self._tracker.finish, self._call, _error_type(e))
             raise
-        _safe(self._tracker.finish, self._call, None)
+        _safe(self._tracker.finish, self._call, None, result)
         return result
 
     async def cancel(self) -> None:
@@ -347,7 +417,7 @@ class _Client:
         except BaseException as e:
             self._failed(call, e)
             raise
-        _safe(self._tracker.finish, call, None)
+        _safe(self._tracker.finish, call, None, result)
         return result
 
     def run(self, application: str, arguments: Any, **kwargs: Any) -> Any:
@@ -371,7 +441,7 @@ class _Client:
         except BaseException as e:
             _safe(self._tracker.finish, call, _error_type(e))
             raise
-        _safe(self._tracker.finish, call, None)
+        _safe(self._tracker.finish, call, None, result)
         return result
 
     def get_handle(self, application: str, request_id: str) -> Any:
@@ -436,7 +506,7 @@ class _AsyncClient(_Client):
         except BaseException as e:
             self._failed(call, e)
             raise
-        _safe(self._tracker.finish, call, None)
+        _safe(self._tracker.finish, call, None, result)
         return result
 
     async def run(self, application: str, arguments: Any, **kwargs: Any) -> Any:
@@ -466,7 +536,7 @@ class _AsyncClient(_Client):
         except BaseException as e:
             _safe(self._tracker.finish, call, _error_type(e))
             raise
-        _safe(self._tracker.finish, call, None)
+        _safe(self._tracker.finish, call, None, result)
         return result
 
     async def get_handle(self, application: str, request_id: str) -> Any:

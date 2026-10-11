@@ -11,9 +11,16 @@ httpx = pytest.importorskip("httpx")
 
 import inferledger  # noqa: E402
 from inferledger import Record, context  # noqa: E402
-from inferledger.fal import track  # noqa: E402
+from inferledger.fal import WORKFLOW_ENVELOPE_HEADER, track  # noqa: E402
 
 RESULT = {"images": [{"url": "https://fal.media/x.png"}]}
+WORKFLOW_RESULT = {
+    "output": RESULT,
+    "nodes": {
+        "node-1": {"endpoint": "acme-compute/test-myapp-image-synthesis", "request_id": "step-1"},
+        "node-2": {"endpoint": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "request_id": "step-2"},
+    },
+}
 REFUSED = {
     "detail": [{"type": "content_policy_violation", "msg": "refused: a photo of my kid"}],
     "error_type": "content_policy_violation",
@@ -27,6 +34,7 @@ class FakeFal:
         self.refuse = refuse
         self.n = 0
         self.requests = []
+        self.envelope = False  # whether a submit asked for the workflow envelope
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -35,6 +43,7 @@ class FakeFal:
             return httpx.Response(200, json=RESULT, headers={"x-fal-request-id": "run-1"})
         if host == "queue.fal.run" and request.method == "POST":
             self.n += 1
+            self.envelope = request.headers.get(WORKFLOW_ENVELOPE_HEADER) == "true"
             base = f"https://queue.fal.run/fal-ai/flux/dev/requests/req-{self.n}"
             return httpx.Response(
                 200,
@@ -48,7 +57,9 @@ class FakeFal:
         if url.endswith("/status"):
             return httpx.Response(200, json={"status": "COMPLETED", "logs": [], "metrics": {"inference_time": 1.5}})
         if "/requests/" in url:
-            return httpx.Response(422, json=REFUSED) if self.refuse else httpx.Response(200, json=RESULT)
+            if self.refuse:
+                return httpx.Response(422, json=REFUSED)
+            return httpx.Response(200, json=WORKFLOW_RESULT if self.envelope else RESULT)
         raise AssertionError(f"unexpected request {request.method} {url}")
 
 
@@ -139,3 +150,14 @@ def test_async_client(fal, sent):
     ]
     assert sent[1].units == {"inference_seconds": 1.5}
     assert all(r.user_id == "u1" for r in sent)
+
+
+def test_workflow_result_with_the_envelope_header_records_each_step(fal, sent):
+    client = track(fal_client.SyncClient(key="test-key"))
+    handle = client.submit("fal-ai/flux/dev", arguments=ARGS, headers={WORKFLOW_ENVELOPE_HEADER: "true"})
+    assert handle.get(interval=0) == WORKFLOW_RESULT
+    assert fal.requests[0].headers[WORKFLOW_ENVELOPE_HEADER] == "true"  # the app's header reached fal
+    assert [(r.phase, r.model, r.request_id, r.parent_request_id) for r in sent[2:]] == [
+        ("call", "acme-compute/test-myapp-image-synthesis", "step-1", "req-1"),
+        ("call", "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "step-2", "req-1"),
+    ]

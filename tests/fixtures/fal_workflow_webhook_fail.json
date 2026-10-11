@@ -1,0 +1,42 @@
+{
+  "error": "Unexpected status code: 400",
+  "gateway_request_id": "01a12c51-976b-74e0-81f4-9bab7c8b2ac1",
+  "payload": {
+    "error": {
+      "body": {
+        "detail": [
+          {
+            "error_code": "file_download_error",
+            "loc": [
+              "body"
+            ],
+            "msg": "(left out)",
+            "type": "UpstreamRequestError",
+            "upstreams": [
+              {
+                "error_code": "file_download_error",
+                "model_name": "FLUX_2_KLEIN",
+                "provider": "FAL",
+                "request_id": "01a12c51-d215-7591-b91a-af661440a1f9",
+                "status": "FAILED",
+                "upstream": "fal-ai/flux-2/klein/9b/edit"
+              }
+            ]
+          }
+        ]
+      },
+      "status": 400
+    },
+    "message": "(left out)",
+    "node_id": "node-0qV12jrPWu",
+    "nodes": {
+      "node-0qV12jrPWu": {
+        "endpoint": "acme-compute/test-myapp-image-synthesis",
+        "request_id": "01a12c51-97b0-78d2-b446-1d5e1c2cfce4"
+      }
+    },
+    "type": "error"
+  },
+  "request_id": "01a12c51-976b-74e0-81f4-9bab7c8b2ac1",
+  "status": "ERROR"
+}

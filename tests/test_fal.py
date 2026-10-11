@@ -1,14 +1,17 @@
 """The fal wrapper, against stand-ins shaped like fal_client's clients (no network, no fal_client)."""
 
 import asyncio
+import copy
+import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import inferledger
 from inferledger import Record, context
-from inferledger.fal import inside, track, webhook
+from inferledger.fal import WORKFLOW_ENVELOPE_HEADER, inside, track, webhook
 
 # --- stand-ins for fal_client ----------------------------------------------------------------
 
@@ -346,6 +349,160 @@ def test_run_that_fails_is_one_failed_call(sent):
     with pytest.raises(FalError):
         client.run("fal-ai/flux/dev", arguments=ARGS)
     assert phases(sent) == [("call", "run-1", "error")]
+
+
+# --- workflow steps -----------------------------------------------------------------------------------
+
+# Real answers from a fal workflow run with WORKFLOW_ENVELOPE_HEADER, captured 2026-10-11, with URLs,
+# inputs and messages taken out.
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def fixture(name):
+    return json.loads((FIXTURES / name).read_text())
+
+
+def steps(sent):
+    return [(r.model, r.request_id, r.status, r.error_type) for r in sent if r.phase == "call"]
+
+
+def test_webhook_of_a_workflow_run_records_each_step(sent):
+    body = fixture("fal_workflow_webhook_ok.json")
+    run_id = body["request_id"]
+    with context(user_id="u1", task_id="t1"):
+        finish = webhook(body)
+
+    assert finish.phase == "finish" and finish.request_id == run_id and finish.status == "ok"
+    assert steps(sent) == [
+        ("acme-compute/test-myapp-image-synthesis", "01a12c51-95d0-7542-b124-70aba9860bb8", "ok", None),
+        ("acme-compute/test-myapp-video-postprocess", "01a12c52-7fde-7803-97ae-d9d866adacec", "ok", None),
+        ("fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "01a12c51-e86e-7330-976f-e4dd84350ae3", "ok", None),
+    ]  # endpoint names as fal gives them: lowercase here, ACME-COMPUTE/... in the submit URL
+    for step in sent[1:]:
+        assert (step.parent_provider, step.parent_request_id) == ("fal", run_id)
+        assert (step.user_id, step.task_id) == ("u1", "t1")
+    assert "example.com" not in json.dumps([r.to_wire() for r in sent])  # nothing of the output
+
+
+def test_webhook_of_a_failed_workflow_run_marks_the_step_that_failed(sent):
+    body = fixture("fal_workflow_webhook_fail.json")
+    finish = webhook(body)
+
+    assert finish.status == "error" and finish.error_type == "file_download_error"  # from payload.error.body.detail
+    step = ("acme-compute/test-myapp-image-synthesis", "01a12c51-97b0-78d2-b446-1d5e1c2cfce4")
+    assert steps(sent) == [(*step, "error", "file_download_error")]
+    assert sent[1].parent_request_id == body["request_id"]
+    assert "(left out)" not in json.dumps([r.to_wire() for r in sent])  # never fal's messages
+
+
+def test_only_the_step_named_by_node_id_failed(sent):
+    body = fixture("fal_workflow_webhook_fail.json")
+    body["payload"]["nodes"]["node-earlier"] = {"endpoint": "fal-ai/flux/dev", "request_id": "a1"}
+    webhook(body)
+    assert [(s[1], s[2]) for s in steps(sent)] == [("01a12c51-97b0-78d2-b446-1d5e1c2cfce4", "error"), ("a1", "ok")]
+
+
+def test_a_step_that_fell_back_also_records_the_failed_attempt(sent):
+    body = fixture("fal_workflow_webhook_ok.json")
+    body["payload"]["nodes"]["node-v-zFBFeDx7"] = {
+        "endpoint": "bytedance/seedance/v1/lite/image-to-video",
+        "request_id": "b2",
+        "fallback": {
+            "action": "fallback",
+            "reason": "server_error",
+            "failed_endpoint": "minimax/hailuo-02/standard/image-to-video",
+            "failed_request_id": "c3",
+        },
+    }
+    webhook(body)
+    assert steps(sent)[2:] == [
+        ("minimax/hailuo-02/standard/image-to-video", "c3", "error", "server_error"),
+        ("bytedance/seedance/v1/lite/image-to-video", "b2", "ok", None),
+    ]
+    assert all(r.parent_request_id == body["request_id"] for r in sent[1:])
+
+
+def test_odd_workflow_bodies_never_raise(sent):
+    run = {"request_id": "run-1", "status": "OK"}
+    for payload in (
+        {"output": {}, "nodes": "text"},
+        {"output": {}, "nodes": {"n1": "text", "n2": {"endpoint": 7}, "n3": {"request_id": "s3", "fallback": "x"}}},
+        {"nodes": {"n1": {"endpoint": "fal-ai/flux/dev", "request_id": "s1"}}},  # no output: an app's own result
+    ):
+        assert webhook({**run, "payload": payload}).status == "ok"
+    assert steps(sent) == [(None, "s3", "ok", None)]
+
+
+def test_a_broken_step_record_does_not_lose_the_finish(sent, monkeypatch, caplog):
+    def boom(*a, **k):
+        raise RuntimeError("bug in inferledger")
+
+    monkeypatch.setattr(inferledger.fal, "_record_step", boom)
+    finish = webhook(fixture("fal_workflow_webhook_ok.json"))
+    assert finish is not None and phases(sent) == [("finish", finish.request_id, "ok")]
+    assert "bug in inferledger" in caplog.text
+
+
+def test_webhook_error_type_finds_the_detail_at_any_depth():
+    error_type = inferledger.fal._webhook_error_type
+    assert error_type(fixture("fal_workflow_webhook_fail.json")) == "file_download_error"
+    deep = {"detail": [{"type": "UpstreamRequestError", "msg": "a photo of my kid"}]}
+    for _ in range(10):
+        deep = {"x": deep, "detail": "a string detail is skipped"}
+    assert error_type({"payload": deep}) == "UpstreamRequestError"
+
+    loop = {}
+    loop["self"] = loop
+    for odd in ({}, {"payload": "text"}, {"payload": {"detail": []}}, {"payload": {"detail": [1]}}, {"payload": loop}):
+        assert error_type(odd) == "error"
+
+
+def test_a_workflow_result_fetched_here_records_each_step(sent):
+    result = fixture("fal_workflow_result_ok.json")
+    fal = FalClient(result=result)
+    client = track(fal)
+    headers = {WORKFLOW_ENVELOPE_HEADER: "true"}
+    with context(user_id="u1", task_id="t1"):
+        handle = client.submit("ACME-COMPUTE/test-myapp-video", arguments=ARGS, headers=headers)
+    assert handle.get() is result  # the result is the app's, untouched
+    handle.get()  # fetched again: nothing more
+
+    assert fal.calls[0][3]["headers"] == {"X-Fal-Workflow-Envelope": "true"}
+    assert phases(sent)[:2] == [("start", "req-1", None), ("finish", "req-1", "ok")]
+    assert [s[:3] for s in steps(sent)] == [
+        ("acme-compute/test-myapp-image-synthesis", "01a126d1-5df5-7f00-922d-9435ad153662", "ok"),
+        ("fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "01a126d1-cde8-7f61-a985-00573e14abf1", "ok"),
+        ("acme-compute/test-myapp-video-postprocess", "01a126d3-7032-7313-86b2-7e7316922b41", "ok"),
+    ]
+    for step in sent[2:]:
+        assert (step.parent_provider, step.parent_request_id) == ("fal", "req-1")
+        assert (step.user_id, step.task_id) == ("u1", "t1")  # from the call, though get() was outside the block
+
+
+def test_workflow_steps_from_result_and_subscribe(sent):
+    fal = FalClient(result=fixture("fal_workflow_result_ok.json"))
+    client = track(fal)
+    handle = client.submit("ACME-COMPUTE/test-myapp-video", arguments=ARGS)
+    client.result("ACME-COMPUTE/test-myapp-video", handle.request_id)
+    client.subscribe("ACME-COMPUTE/test-myapp-video", arguments=ARGS)
+    assert [r.parent_request_id for r in sent if r.phase == "call"] == ["req-1"] * 3 + ["req-2"] * 3
+
+
+def test_async_workflow_result_records_each_step(sent):
+    async def main():
+        client = track(AsyncFalClient(result=fixture("fal_workflow_result_ok.json")))
+        handle = await client.submit("ACME-COMPUTE/test-myapp-video", arguments=ARGS)
+        await handle.get()
+
+    asyncio.run(main())
+    assert len(steps(sent)) == 3 and all(r.parent_request_id == "req-1" for r in sent[2:])
+
+
+def test_a_result_that_is_not_a_workflow_envelope_has_no_steps(sent):
+    for result in ({"nodes": {"n": {"endpoint": "x", "request_id": "y"}}}, {"output": 1}, ["output", "nodes"]):
+        client = track(FalClient(result=copy.deepcopy(result)))
+        client.submit("fal-ai/flux/dev", arguments=ARGS).get()
+    assert steps(sent) == []
 
 
 # --- inside our own fal apps -------------------------------------------------------------------------

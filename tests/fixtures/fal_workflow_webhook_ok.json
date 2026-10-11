@@ -1,0 +1,41 @@
+{
+  "error": null,
+  "gateway_request_id": "01a12c51-9574-7b52-a4e7-bf56f16a9547",
+  "payload": {
+    "nodes": {
+      "node-0qV12jrPWu": {
+        "endpoint": "acme-compute/test-myapp-image-synthesis",
+        "request_id": "01a12c51-95d0-7542-b124-70aba9860bb8"
+      },
+      "node-47NBBSSanb": {
+        "endpoint": "acme-compute/test-myapp-video-postprocess",
+        "request_id": "01a12c52-7fde-7803-97ae-d9d866adacec"
+      },
+      "node-v-zFBFeDx7": {
+        "endpoint": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+        "request_id": "01a12c51-e86e-7330-976f-e4dd84350ae3"
+      }
+    },
+    "output": {
+      "inference_logs": {
+        "app_name": "test-myapp-video-postprocess",
+        "client_name": "VideoClient",
+        "env": "test",
+        "execution_time": 9.589831113815308,
+        "machine_type": "M"
+      },
+      "video": {
+        "aspect_ratio": "vertical",
+        "content_type": "video/mp4",
+        "file_name": "output.mp4",
+        "file_size": 2994943,
+        "has_audio": false,
+        "output_path": "outputs/videos/output.mp4",
+        "thumbnail_path": "outputs/images/thumbnail.jpg",
+        "url": "https://example.com/output.mp4"
+      }
+    }
+  },
+  "request_id": "01a12c51-9574-7b52-a4e7-bf56f16a9547",
+  "status": "OK"
+}

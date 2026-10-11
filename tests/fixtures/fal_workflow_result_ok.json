@@ -1,0 +1,35 @@
+{
+  "output": {
+    "video": {
+      "url": "https://example.com/output.mp4",
+      "content_type": "video/mp4",
+      "file_name": "output.mp4",
+      "file_size": 2634059,
+      "output_path": "outputs/videos/output.mp4",
+      "thumbnail_path": "outputs/images/thumbnail.jpg",
+      "aspect_ratio": "vertical",
+      "has_audio": false
+    },
+    "inference_logs": {
+      "execution_time": 14.220078468322754,
+      "app_name": "test-myapp-video-postprocess",
+      "machine_type": "M",
+      "client_name": "VideoClient",
+      "env": "test"
+    }
+  },
+  "nodes": {
+    "node-0qV12jrPWu": {
+      "endpoint": "acme-compute/test-myapp-image-synthesis",
+      "request_id": "01a126d1-5df5-7f00-922d-9435ad153662"
+    },
+    "node-v-zFBFeDx7": {
+      "endpoint": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+      "request_id": "01a126d1-cde8-7f61-a985-00573e14abf1"
+    },
+    "node-47NBBSSanb": {
+      "endpoint": "acme-compute/test-myapp-video-postprocess",
+      "request_id": "01a126d3-7032-7313-86b2-7e7316922b41"
+    }
+  }
+}
