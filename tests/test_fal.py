@@ -1,12 +1,14 @@
 """The fal wrapper, against stand-ins shaped like fal_client's clients (no network, no fal_client)."""
 
 import asyncio
+import logging
+from types import SimpleNamespace
 
 import pytest
 
 import inferledger
 from inferledger import Record, context
-from inferledger.fal import track, webhook
+from inferledger.fal import inside, track, webhook
 
 # --- stand-ins for fal_client ----------------------------------------------------------------
 
@@ -344,6 +346,54 @@ def test_run_that_fails_is_one_failed_call(sent):
     with pytest.raises(FalError):
         client.run("fal-ai/flux/dev", arguments=ARGS)
     assert phases(sent) == [("call", "run-1", "error")]
+
+
+# --- inside our own fal apps -------------------------------------------------------------------------
+
+
+class App:
+    """Like a fal.App while it serves a request: current_request is fal's RequestContext, or None."""
+
+    def __init__(self, request_id):
+        self.current_request = SimpleNamespace(request_id=request_id, endpoint="/", headers={})
+
+
+def test_calls_inside_our_app_have_the_apps_request_as_parent(sent):
+    app = App("app-req-1")
+    client = track(FalClient())
+    with inside(app):
+        handle = client.submit("fal-ai/flux/dev", arguments=ARGS)
+    handle.get()  # the finish is fetched outside the block and still has the parent
+    client.run("fal-ai/flux/dev", arguments=ARGS)  # outside: no parent
+
+    start, finish, outside = sent
+    assert (start.parent_provider, start.parent_request_id) == ("fal", "app-req-1")
+    assert (finish.parent_provider, finish.parent_request_id) == ("fal", "app-req-1")
+    assert outside.parent_provider is None and outside.parent_request_id is None
+
+
+def test_inside_keeps_the_user_and_task_already_set(sent):
+    with context(user_id="u1", task_id="t1"), inside(App("app-req-1")) as ctx:
+        assert ctx == inferledger.Context("u1", "t1", "fal", "app-req-1")
+
+
+def test_inside_without_a_current_request_does_nothing(sent, caplog):
+    class Broken:
+        @property
+        def current_request(self):
+            raise RuntimeError("not serving")
+
+    no_request = SimpleNamespace(current_request=None)
+    for app in (no_request, App(None), App(""), object(), Broken(), None):
+        with caplog.at_level(logging.DEBUG, logger="inferledger"), inside(app) as ctx:
+            assert ctx == inferledger.Context()
+    assert "no current fal request" in caplog.text
+
+
+def test_inside_lets_the_apps_errors_through():
+    with pytest.raises(ValueError), inside(App("app-req-1")):
+        raise ValueError("the app's own error")
+    assert inferledger.current() == inferledger.Context()
 
 
 # --- settings --------------------------------------------------------------------------------------

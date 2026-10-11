@@ -29,6 +29,9 @@ gave up waiting.
 
 Settings: of the arguments, only those named in `settings` are copied, the ones that change the price
 (resolution, duration, number of images...). Never the whole input: prompts and media URLs stay out.
+
+Our own fal apps make calls of their own. In the app's endpoint, inside(self) makes the request the app
+is serving the parent of every tracked call in the block.
 """
 
 from __future__ import annotations
@@ -39,10 +42,12 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 from . import _client
+from ._context import Context, context, current
 from ._record import Record, error_name
 
 logger = logging.getLogger("inferledger")
@@ -73,6 +78,33 @@ def track(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     tracker = _Tracker(settings)
     is_async = inspect.iscoroutinefunction(getattr(client, "submit", None))
     return _AsyncClient(client, tracker) if is_async else _Client(client, tracker)
+
+
+@contextmanager
+def inside(app: Any) -> Generator[Context, None, None]:
+    """In one of our own fal apps: every tracked call in the block gets the fal request the app is serving
+    as its parent. `app` is the fal.App, so in an endpoint:
+
+        with inferledger.fal.inside(self):
+            return await self._inference(input)
+
+    The request id is read from app.current_request (as in fal 1.72). When there is none (the app runs
+    outside fal, or an older fal), the block runs as if inside() weren't there."""
+    request_id = _current_request_id(app)
+    if request_id is None:
+        logger.debug("inferledger: no current fal request, so calls in this block get no parent")
+        yield current()
+        return
+    with context(parent_provider=PROVIDER, parent_request_id=request_id) as ctx:
+        yield ctx
+
+
+def _current_request_id(app: Any) -> str | None:
+    try:
+        request_id = getattr(getattr(app, "current_request", None), "request_id", None)
+    except Exception:
+        return None
+    return request_id if isinstance(request_id, str) and request_id else None
 
 
 def webhook(body: Any, *, model: str | None = None) -> Record | None:
