@@ -44,7 +44,7 @@ class Record:
     # Settings that change the price (resolution, requested duration, audio on/off), copied
     # by name by the wrappers. Never the call's whole input: that is how prompts stay out.
     settings: dict[str, Any] = field(default_factory=dict)
-    # Retries the app marks itself (see the README); None when not marked.
+    # Retries the app marks itself: the same call_id on every attempt, attempt 1, 2, 3...; None when not marked.
     call_id: str | None = None
     attempt: int | None = None
     # Filled from the current context when the record is made.
