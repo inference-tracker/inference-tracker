@@ -33,6 +33,15 @@ with inferledger.context(user_id=uid, task_id=task.id):
     ...
 ```
 
+A call made by another call names that call as its parent, by provider and the provider's request
+id, the way the bill knows it. The server finds the user and task by walking up the parents, so
+code that only knows its parent doesn't need them:
+
+```python
+with inferledger.context(parent_provider="fal", parent_request_id=rid):
+    ...
+```
+
 ## fal
 
 Wrap the client once, then call it as before.
@@ -58,27 +67,41 @@ When fal sends the result to a webhook, record the finish in the webhook handler
 inferledger.fal.webhook(request_json)  # the body fal posts: request_id, status, payload
 ```
 
+### Workflows
+
+Submit a fal workflow with the envelope header, and its result comes back as `{output, nodes}`,
+with the request id of each step. Each step is then recorded too, with the run as its parent:
+from the webhook body, or from the result when it is fetched here (`get()`, `result()`,
+`subscribe()`). The app reads its output from `output`.
+
+```python
+handle = await client.submit(
+    "workflows/ACME-COMPUTE/prod-myapp-video",
+    arguments=args,
+    webhook_url=hook_url,
+    headers={inferledger.fal.WORKFLOW_ENVELOPE_HEADER: "true"},
+)
+...
+inferledger.fal.webhook(request_json)  # the run's finish, and one record per step
+```
+
+When a run fails, the step that failed is recorded with fal's error code. A step that fell back to
+another model also gets a record for the model that failed.
+
 ### Our own fal apps
 
-Our own fal apps make calls of their own. List their names (or the start of their names) in
-`carry_to`. Calls to those apps then carry the user, the task and the calling record's id, inside
-the request:
+Our own fal apps make calls of their own. In the endpoint, `inside(self)` makes the request the app
+is serving the parent of every tracked call in the block:
 
 ```python
-client = inferledger.fal.track(fal_client.SyncClient(key=FAL_KEY), carry_to=["acme/"])
+@fal.endpoint("/")
+async def generate(self, input: Input) -> Output:
+    with inferledger.fal.inside(self):
+        return await self._inference(input)
 ```
 
-Never list fal's public models there: they may refuse an input they don't know.
-
-Inside the app, restore that before its own tracked calls:
-
-```python
-with inferledger.restore(input):
-    ...
-```
-
-The app's input model must accept the `inferledger` field (an optional `dict` field, or
-`extra="allow"`). Otherwise pydantic drops it before the handler sees it.
+The request id comes from fal's `self.current_request`. Without one (the app runs outside fal), the
+block does nothing.
 
 ## What a record holds
 
@@ -89,7 +112,8 @@ request id.
 Each record has: provider, model, the provider's request id, status and error type (the error's
 class name or the provider's code, never its message), start time and duration, usage as the
 provider reports it, and the settings that change the price (copied by name, never the whole
-input). From the context: user, task, and `parent_id`, the record id of the call that made this one.
+input). From the context: user, task, and the call that made this one (`parent_provider` and
+`parent_request_id`, the provider's request id).
 
 ## If sending fails
 
