@@ -1,4 +1,4 @@
-# inferledger
+# inference-tracker
 
 Per-user inference cost for AI apps.
 
@@ -12,13 +12,13 @@ Early work in progress. Python 3.10 or newer, no other packages needed.
 ## Setup
 
 ```python
-import inferledger
+import inference_tracker
 
-inferledger.init(url="https://.../ingest", key="...", app="myapp")  # once per process
+inference_tracker.init(url="https://.../ingest", key="...", app="myapp")  # once per process
 ```
 
-Or set `INFERLEDGER_URL`, `INFERLEDGER_KEY` and `INFERLEDGER_APP` (and optionally
-`INFERLEDGER_ENVIRONMENT`, e.g. `prod`). Without url, key and app, nothing is sent and every call
+Or set `INFERENCE_TRACKER_URL`, `INFERENCE_TRACKER_KEY` and `INFERENCE_TRACKER_APP` (and optionally
+`INFERENCE_TRACKER_ENVIRONMENT`, e.g. `prod`). Without url, key and app, nothing is sent and every call
 below does nothing.
 
 Records are sent in the background every few seconds. Some hosts freeze the process as soon as the
@@ -29,7 +29,7 @@ block ends.
 Say who the work is for where it starts. Every tracked call inside the block gets that user and task:
 
 ```python
-with inferledger.context(user_id=uid, task_id=task.id):
+with inference_tracker.context(user_id=uid, task_id=task.id):
     ...
 ```
 
@@ -38,7 +38,7 @@ id, the way the bill knows it. The server finds the user and task by walking up 
 code that only knows its parent doesn't need them:
 
 ```python
-with inferledger.context(parent_provider="fal", parent_request_id=rid):
+with inference_tracker.context(parent_provider="fal", parent_request_id=rid):
     ...
 ```
 
@@ -48,9 +48,9 @@ Wrap the client once, then call it as before.
 
 ```python
 import fal_client
-import inferledger
+import inference_tracker
 
-client = inferledger.fal.track(fal_client.AsyncClient(key=FAL_KEY))
+client = inference_tracker.fal.track(fal_client.AsyncClient(key=FAL_KEY))
 
 handle = await client.submit("fal-ai/kling-video/v2.6/pro/motion-control", arguments=args)
 result = await handle.get()
@@ -64,7 +64,7 @@ the call.
 When fal sends the result to a webhook, record the finish in the webhook handler:
 
 ```python
-inferledger.fal.webhook(request_json)  # the body fal posts: request_id, status, payload
+inference_tracker.fal.webhook(request_json)  # the body fal posts: request_id, status, payload
 ```
 
 ### Workflows
@@ -79,10 +79,10 @@ handle = await client.submit(
     "workflows/ACME-COMPUTE/prod-myapp-video",
     arguments=args,
     webhook_url=hook_url,
-    headers={inferledger.fal.WORKFLOW_ENVELOPE_HEADER: "true"},
+    headers={inference_tracker.fal.WORKFLOW_ENVELOPE_HEADER: "true"},
 )
 ...
-inferledger.fal.webhook(request_json)  # the run's finish, and one record per step
+inference_tracker.fal.webhook(request_json)  # the run's finish, and one record per step
 ```
 
 When a run fails, the step that failed is recorded with fal's error code. A step that fell back to
@@ -96,7 +96,7 @@ is serving the parent of every tracked call in the block:
 ```python
 @fal.endpoint("/")
 async def generate(self, input: Input) -> Output:
-    with inferledger.fal.inside(self):
+    with inference_tracker.fal.inside(self):
         return await self._inference(input)
 ```
 
@@ -118,5 +118,5 @@ input). From the context: user, task, and the call that made this one (`parent_p
 ## If sending fails
 
 A busy or unreachable server is retried with growing waits. Records that still can't be sent, or
-that the server refuses, are written to the `inferledger` log as one JSON line each. Every batch
+that the server refuses, are written to the `inference_tracker` log as one JSON line each. Every batch
 also tells the server how many records were lost since the last one that got through.

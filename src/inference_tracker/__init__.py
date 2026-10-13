@@ -1,4 +1,4 @@
-"""inferledger: records each inference call with who it was for."""
+"""inference_tracker: records each inference call with who it was for."""
 
 from . import fal
 from ._client import Client, flush, init, record, shutdown

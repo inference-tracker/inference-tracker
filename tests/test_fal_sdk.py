@@ -1,5 +1,5 @@
 """The fal wrapper around the real fal_client package, with fal's servers stood in by an httpx mock.
-Skipped when fal_client isn't installed (it isn't a dependency of inferledger)."""
+Skipped when fal_client isn't installed (it isn't a dependency of inference_tracker)."""
 
 import asyncio
 import json
@@ -9,9 +9,9 @@ import pytest
 fal_client = pytest.importorskip("fal_client")
 httpx = pytest.importorskip("httpx")
 
-import inferledger  # noqa: E402
-from inferledger import Record, context  # noqa: E402
-from inferledger.fal import WORKFLOW_ENVELOPE_HEADER, track  # noqa: E402
+import inference_tracker  # noqa: E402
+from inference_tracker import Record, context  # noqa: E402
+from inference_tracker.fal import WORKFLOW_ENVELOPE_HEADER, track  # noqa: E402
 
 RESULT = {"images": [{"url": "https://fal.media/x.png"}]}
 WORKFLOW_RESULT = {
@@ -76,7 +76,7 @@ def fal(monkeypatch):
 @pytest.fixture
 def sent(monkeypatch):
     out: list[Record] = []
-    monkeypatch.setattr(inferledger._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
     return out
 
 

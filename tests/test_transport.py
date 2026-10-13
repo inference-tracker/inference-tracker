@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from inferledger._transport import post
+from inference_tracker._transport import post
 
 
 @pytest.fixture

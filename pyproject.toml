@@ -1,5 +1,5 @@
 [project]
-name = "inferledger"
+name = "inference-tracker"
 dynamic = ["version"]
 description = "Per-user inference cost for AI apps"
 readme = "README.md"
@@ -15,10 +15,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/inferledger/_version.py"
+path = "src/inference_tracker/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/inferledger"]
+packages = ["src/inference_tracker"]
 
 [tool.ruff]
 line-length = 120

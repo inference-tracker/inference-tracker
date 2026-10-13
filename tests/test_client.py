@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-import inferledger
-from inferledger import Client, Record
-from inferledger._transport import Result
+import inference_tracker
+from inference_tracker import Client, Record
+from inference_tracker._transport import Result
 
 
 class FakeServer:
@@ -35,7 +35,7 @@ def call(n=0):
 
 
 def unsent_lines(caplog):
-    return [r for r in caplog.records if r.getMessage().startswith("inferledger.unsent ")]
+    return [r for r in caplog.records if r.getMessage().startswith("inference_tracker.unsent ")]
 
 
 def test_sends_in_batches_with_who_sent_them():
@@ -47,7 +47,7 @@ def test_sends_in_batches_with_who_sent_them():
     assert c.flush() is True
     assert [len(b["records"]) for b in server.bodies] == [3, 3, 1]
     assert server.bodies[0]["app"] == "myapp" and server.bodies[0]["environment"] == "prod"
-    assert server.bodies[0]["sdk"]["name"] == "inferledger-python"
+    assert server.bodies[0]["sdk"]["name"] == "inference-tracker-python"
     assert server.bodies[0]["lost"] == 0
     assert c.pending() == 0
 
@@ -71,7 +71,7 @@ def test_retry_after_is_respected():
 
 
 def test_when_time_runs_out_records_are_kept_and_logged_once(caplog):
-    caplog.set_level(logging.WARNING, logger="inferledger")
+    caplog.set_level(logging.WARNING, logger="inference_tracker")
     server = FakeServer(*[Result("retry")] * 1000)
     c = client(server, first_retry_delay=0.05)
     c.record(call(1))
@@ -90,7 +90,7 @@ def test_when_time_runs_out_records_are_kept_and_logged_once(caplog):
 
 
 def test_refused_batch_is_logged_dropped_and_reported(caplog):
-    caplog.set_level(logging.WARNING, logger="inferledger")
+    caplog.set_level(logging.WARNING, logger="inference_tracker")
     server = FakeServer(Result("rejected", 401))
     c = client(server)
     c.record(call(1))
@@ -107,7 +107,7 @@ def test_refused_batch_is_logged_dropped_and_reported(caplog):
 
 
 def test_full_queue_drops_the_oldest_and_logs_it(caplog):
-    caplog.set_level(logging.WARNING, logger="inferledger")
+    caplog.set_level(logging.WARNING, logger="inference_tracker")
     server = FakeServer()
     c = client(server, max_queue=3)
     for i in range(5):
@@ -159,22 +159,22 @@ def test_shutdown_sends_what_is_left():
 @pytest.fixture
 def no_global_client():
     yield
-    inferledger._client._client = None
+    inference_tracker._client._client = None
 
 
 def test_without_init_everything_is_a_no_op(no_global_client, monkeypatch):
-    for name in ("INFERLEDGER_URL", "INFERLEDGER_KEY", "INFERLEDGER_APP"):
+    for name in ("INFERENCE_TRACKER_URL", "INFERENCE_TRACKER_KEY", "INFERENCE_TRACKER_APP"):
         monkeypatch.delenv(name, raising=False)
-    assert inferledger.init() is None
-    inferledger.record(call())
-    assert inferledger.flush() is True
+    assert inference_tracker.init() is None
+    inference_tracker.record(call())
+    assert inference_tracker.flush() is True
 
 
 def test_context_with_flush_sends_when_the_block_ends(no_global_client):
     server = FakeServer()
-    inferledger.init("https://ingest.test", "key", "myapp", background=False, post=server)
-    with inferledger.context(user_id="u1", task_id="t1", flush=True):
-        inferledger.record(call())
+    inference_tracker.init("https://ingest.test", "key", "myapp", background=False, post=server)
+    with inference_tracker.context(user_id="u1", task_id="t1", flush=True):
+        inference_tracker.record(call())
         assert server.bodies == []
     assert server.records()[0]["user_id"] == "u1"
 

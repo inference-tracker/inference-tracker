@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import inferledger
-from inferledger import Record, context
-from inferledger.fal import WORKFLOW_ENVELOPE_HEADER, inside, track, webhook
+import inference_tracker
+from inference_tracker import Record, context
+from inference_tracker.fal import WORKFLOW_ENVELOPE_HEADER, inside, track, webhook
 
 # --- stand-ins for fal_client ----------------------------------------------------------------
 
@@ -176,7 +176,7 @@ class AsyncFalClient(FalClient):
 @pytest.fixture
 def sent(monkeypatch):
     out: list[Record] = []
-    monkeypatch.setattr(inferledger._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
     return out
 
 
@@ -435,16 +435,16 @@ def test_odd_workflow_bodies_never_raise(sent):
 
 def test_a_broken_step_record_does_not_lose_the_finish(sent, monkeypatch, caplog):
     def boom(*a, **k):
-        raise RuntimeError("bug in inferledger")
+        raise RuntimeError("bug in inference_tracker")
 
-    monkeypatch.setattr(inferledger.fal, "_record_step", boom)
+    monkeypatch.setattr(inference_tracker.fal, "_record_step", boom)
     finish = webhook(fixture("fal_workflow_webhook_ok.json"))
     assert finish is not None and phases(sent) == [("finish", finish.request_id, "ok")]
-    assert "bug in inferledger" in caplog.text
+    assert "bug in inference_tracker" in caplog.text
 
 
 def test_webhook_error_type_finds_the_detail_at_any_depth():
-    error_type = inferledger.fal._webhook_error_type
+    error_type = inference_tracker.fal._webhook_error_type
     assert error_type(fixture("fal_workflow_webhook_fail.json")) == "file_download_error"
     deep = {"detail": [{"type": "UpstreamRequestError", "msg": "a photo of my kid"}]}
     for _ in range(10):
@@ -531,7 +531,7 @@ def test_calls_inside_our_app_have_the_apps_request_as_parent(sent):
 
 def test_inside_keeps_the_user_and_task_already_set(sent):
     with context(user_id="u1", task_id="t1"), inside(App("app-req-1")) as ctx:
-        assert ctx == inferledger.Context("u1", "t1", "fal", "app-req-1")
+        assert ctx == inference_tracker.Context("u1", "t1", "fal", "app-req-1")
 
 
 def test_inside_without_a_current_request_does_nothing(sent, caplog):
@@ -542,15 +542,15 @@ def test_inside_without_a_current_request_does_nothing(sent, caplog):
 
     no_request = SimpleNamespace(current_request=None)
     for app in (no_request, App(None), App(""), object(), Broken(), None):
-        with caplog.at_level(logging.DEBUG, logger="inferledger"), inside(app) as ctx:
-            assert ctx == inferledger.Context()
+        with caplog.at_level(logging.DEBUG, logger="inference_tracker"), inside(app) as ctx:
+            assert ctx == inference_tracker.Context()
     assert "no current fal request" in caplog.text
 
 
 def test_inside_lets_the_apps_errors_through():
     with pytest.raises(ValueError), inside(App("app-req-1")):
         raise ValueError("the app's own error")
-    assert inferledger.current() == inferledger.Context()
+    assert inference_tracker.current() == inference_tracker.Context()
 
 
 # --- settings --------------------------------------------------------------------------------------
@@ -574,7 +574,7 @@ def test_everything_else_passes_through(sent):
 
 def test_a_broken_tracker_does_not_break_the_call(sent, monkeypatch, caplog):
     def boom(*a, **k):
-        raise RuntimeError("bug in inferledger")
+        raise RuntimeError("bug in inference_tracker")
 
     monkeypatch.setattr(Record, "new", boom)
     client = track(FalClient())
@@ -582,7 +582,7 @@ def test_a_broken_tracker_does_not_break_the_call(sent, monkeypatch, caplog):
     assert handle.get() == {"images": [{"url": "u"}]}
     assert client.run("fal-ai/flux/dev", arguments=ARGS)
     assert sent == []
-    assert "bug in inferledger" in caplog.text
+    assert "bug in inference_tracker" in caplog.text
 
 
 def test_arguments_that_are_not_a_dict_are_left_alone(sent):

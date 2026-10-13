@@ -1,8 +1,8 @@
 """Collects records in memory and sends them to the ingest endpoint in batches.
 
-    inferledger.init(url=..., key=..., app="myapp")   # once per process
-    inferledger.record(record)                         # the wrappers call this; never blocks, never raises
-    inferledger.flush()                                # send what's waiting now
+    inference_tracker.init(url=..., key=..., app="myapp")   # once per process
+    inference_tracker.record(record)                         # the wrappers call this; never blocks, never raises
+    inference_tracker.flush()                                # send what's waiting now
 
 Two ways to run:
 - background=True (default): a thread sends every few seconds, or as soon as a batch is full.
@@ -14,7 +14,7 @@ Two ways to run:
 Failures never reach the app. Every record ends up either delivered or in the log:
 - A busy or broken server (429, 5xx, no answer) is retried with growing waits. A batch that still
   isn't through when time runs out stays at the front of the queue for the next try, and is
-  written once to the "inferledger" log as JSON lines (`inferledger.unsent {...}`).
+  written once to the "inference_tracker" log as JSON lines (`inference_tracker.unsent {...}`).
 - A refused batch (any other 4xx) won't be accepted on a retry: it is logged and dropped.
 - When the queue is full (the server has been down a long time), the oldest record is logged and dropped.
 Every batch tells the server how many records weren't delivered since the last one that got
@@ -38,9 +38,9 @@ from . import _transport as transport
 from ._record import Record
 from ._version import __version__
 
-logger = logging.getLogger("inferledger")
+logger = logging.getLogger("inference_tracker")
 
-_SDK = {"name": "inferledger-python", "version": __version__}
+_SDK = {"name": "inference-tracker-python", "version": __version__}
 
 
 class Client:
@@ -72,7 +72,7 @@ class Client:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         if background:
-            self._thread = threading.Thread(target=self._run, name="inferledger", daemon=True)
+            self._thread = threading.Thread(target=self._run, name="inference_tracker", daemon=True)
             self._thread.start()
 
     # --- adding -------------------------------------------------------------------------
@@ -88,7 +88,7 @@ class Client:
             if full:
                 self._wake.set()
         except Exception:
-            logger.exception("inferledger: could not queue a record")
+            logger.exception("inference_tracker: could not queue a record")
 
     def pending(self) -> int:
         with self._lock:
@@ -101,7 +101,7 @@ class Client:
         try:
             return self._drain(deadline=time.monotonic() + timeout, background=False)
         except Exception:
-            logger.exception("inferledger: flush failed")
+            logger.exception("inference_tracker: flush failed")
             return False
 
     def shutdown(self, timeout: float = 5.0) -> None:
@@ -120,7 +120,7 @@ class Client:
             try:
                 self._drain(deadline=time.monotonic() + self.retry_for, background=True)
             except Exception:
-                logger.exception("inferledger: background send failed")
+                logger.exception("inference_tracker: background send failed")
 
     def _drain(self, deadline: float, background: bool) -> bool:
         while True:
@@ -147,7 +147,9 @@ class Client:
                     self._logged.difference_update(w["id"] for w in batch)
                 return True
             if result.outcome == "rejected":
-                logger.warning("inferledger: ingest refused a batch of %d records (HTTP %s)", len(batch), result.status)
+                logger.warning(
+                    "inference_tracker: ingest refused a batch of %d records (HTTP %s)", len(batch), result.status
+                )
                 self._log_unsent(batch)
                 with self._lock:
                     self.lost += len(batch)
@@ -188,7 +190,7 @@ class Client:
             new = [w for w in wires if w["id"] not in self._logged]
             self._logged.update(w["id"] for w in new)
         for wire in new:
-            logger.warning("inferledger.unsent %s", json.dumps(wire, separators=(",", ":")))
+            logger.warning("inference_tracker.unsent %s", json.dumps(wire, separators=(",", ":")))
 
 
 def _left(deadline: float) -> float:
@@ -208,19 +210,19 @@ def init(
     environment: str | None = None,
     **options: Any,
 ) -> Client | None:
-    """Starts sending. Values left out come from INFERLEDGER_URL, INFERLEDGER_KEY, INFERLEDGER_APP and
-    INFERLEDGER_ENVIRONMENT. Without a url, key and app nothing is sent and every call stays a no-op."""
+    """Starts sending. Values left out come from INFERENCE_TRACKER_URL, INFERENCE_TRACKER_KEY, INFERENCE_TRACKER_APP and
+    INFERENCE_TRACKER_ENVIRONMENT. Without a url, key and app nothing is sent and every call stays a no-op."""
     global _client
-    url = url or os.environ.get("INFERLEDGER_URL")
-    key = key or os.environ.get("INFERLEDGER_KEY")
-    app = app or os.environ.get("INFERLEDGER_APP")
-    environment = environment or os.environ.get("INFERLEDGER_ENVIRONMENT")
+    url = url or os.environ.get("INFERENCE_TRACKER_URL")
+    key = key or os.environ.get("INFERENCE_TRACKER_KEY")
+    app = app or os.environ.get("INFERENCE_TRACKER_APP")
+    environment = environment or os.environ.get("INFERENCE_TRACKER_ENVIRONMENT")
     with _client_lock:
         old, _client = _client, None
         if old is not None:
             old.shutdown()
         if not (url and key and app):
-            logger.warning("inferledger: no url, key or app set; records won't be sent")
+            logger.warning("inference_tracker: no url, key or app set; records won't be sent")
             return None
         _client = Client(url, key, app, environment, **options)
         return _client

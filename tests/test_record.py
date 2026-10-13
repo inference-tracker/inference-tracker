@@ -1,6 +1,6 @@
 import json
 
-from inferledger import Record, context, error_name
+from inference_tracker import Record, context, error_name
 
 
 def test_new_record_takes_the_current_context():

@@ -2,13 +2,13 @@
 
 Set once where work starts, read by every tracked call inside it:
 
-    with inferledger.context(user_id=uid, task_id=task.id):
+    with inference_tracker.context(user_id=uid, task_id=task.id):
         ...  # every tracked call in here is tagged with uid and task.id
 
 A call made inside another call (a model called by one of our fal apps) names that call as its
 parent, the way the provider's bill knows it: the provider and its request id.
 
-    with inferledger.context(parent_provider="fal", parent_request_id=rid):
+    with inference_tracker.context(parent_provider="fal", parent_request_id=rid):
         ...
 
 The server finds the user and task of such a call by walking up its parents, so the app inside
@@ -39,7 +39,7 @@ class Context:
     parent_request_id: str | None = None
 
 
-_current: contextvars.ContextVar[Context] = contextvars.ContextVar("inferledger_context", default=Context())  # noqa: B039 (Context is frozen)
+_current: contextvars.ContextVar[Context] = contextvars.ContextVar("inference_tracker_context", default=Context())  # noqa: B039 (Context is frozen)
 
 
 def current() -> Context:

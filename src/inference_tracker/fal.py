@@ -1,9 +1,9 @@
 """Tracks calls made with fal's Python client (the fal_client package), sync or async.
 
     import fal_client
-    import inferledger
+    import inference_tracker
 
-    client = inferledger.fal.track(fal_client.AsyncClient(key=...))
+    client = inference_tracker.fal.track(fal_client.AsyncClient(key=...))
     handle = await client.submit("fal-ai/kling-video/v2.6/pro/motion-control", arguments=args)
     result = await handle.get()
 
@@ -57,7 +57,7 @@ from . import _client
 from ._context import Context, context, current
 from ._record import Record, error_name
 
-logger = logging.getLogger("inferledger")
+logger = logging.getLogger("inference_tracker")
 
 PROVIDER = "fal"
 REQUEST_ID_HEADER = "x-fal-request-id"
@@ -94,14 +94,14 @@ def inside(app: Any) -> Generator[Context, None, None]:
     """In one of our own fal apps: every tracked call in the block gets the fal request the app is serving
     as its parent. `app` is the fal.App, so in an endpoint:
 
-        with inferledger.fal.inside(self):
+        with inference_tracker.fal.inside(self):
             return await self._inference(input)
 
     The request id is read from app.current_request (as in fal 1.72). When there is none (the app runs
     outside fal, or an older fal), the block runs as if inside() weren't there."""
     request_id = _current_request_id(app)
     if request_id is None:
-        logger.debug("inferledger: no current fal request, so calls in this block get no parent")
+        logger.debug("inference_tracker: no current fal request, so calls in this block get no parent")
         yield current()
         return
     with context(parent_provider=PROVIDER, parent_request_id=request_id) as ctx:
@@ -138,7 +138,7 @@ def webhook(body: Any, *, model: str | None = None) -> Record | None:
         )
         _client.record(record)
     except Exception:
-        logger.exception("inferledger: could not record a fal webhook")
+        logger.exception("inference_tracker: could not record a fal webhook")
         return None
     _safe(_record_steps, body.get("payload"), request_id, error_type=record.error_type)
     return record
@@ -298,7 +298,7 @@ class _Tracker:
         try:
             return _Call(application, arguments if isinstance(arguments, Mapping) else {}, self.settings)
         except Exception:
-            logger.exception("inferledger: could not start tracking a fal call")
+            logger.exception("inference_tracker: could not start tracking a fal call")
             return None
 
     def submitted(self, call: _Call | None, request_id: str, *, keep: bool) -> None:
@@ -553,7 +553,9 @@ class _AsyncClient(_Client):
 
 # The request id fal's last answer carried, for run(), whose result has no id in it. Set by a response
 # hook on the client's httpx session; per thread or task, like the context.
-_seen_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("inferledger_fal_request", default=None)
+_seen_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "inference_tracker_fal_request", default=None
+)
 
 
 def _watch_request_ids(http: Any, is_async: bool) -> None:
@@ -572,7 +574,7 @@ def _watch_request_ids(http: Any, is_async: bool) -> None:
     try:
         http.event_hooks = {**hooks, "response": [*hooks.get("response", []), remember_async if is_async else remember]}
     except Exception:
-        logger.debug("inferledger: could not watch fal's responses for request ids", exc_info=True)
+        logger.debug("inference_tracker: could not watch fal's responses for request ids", exc_info=True)
 
 
 def _error_type(error: BaseException) -> str:
@@ -585,5 +587,5 @@ def _safe(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     try:
         return fn(*args, **kwargs)
     except Exception:
-        logger.exception("inferledger: tracking a fal call failed")
+        logger.exception("inference_tracker: tracking a fal call failed")
         return None

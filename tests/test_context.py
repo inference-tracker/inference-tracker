@@ -1,24 +1,24 @@
 import asyncio
 
-import inferledger
-from inferledger import Record, context, current
+import inference_tracker
+from inference_tracker import Record, context, current
 
 
 def test_empty_by_default():
-    assert current() == inferledger.Context()
+    assert current() == inference_tracker.Context()
 
 
 def test_nested_context_keeps_outer_values_and_resets():
     with context(user_id="u1", task_id="t1"):
         with context(parent_provider="fal", parent_request_id="req-9"):
-            assert current() == inferledger.Context("u1", "t1", "fal", "req-9")
+            assert current() == inference_tracker.Context("u1", "t1", "fal", "req-9")
             with context(parent_request_id="req-10"):
-                assert current() == inferledger.Context("u1", "t1", "fal", "req-10")
+                assert current() == inference_tracker.Context("u1", "t1", "fal", "req-10")
         with context(task_id="t2"):
             assert current().task_id == "t2"
             assert current().user_id == "u1"
-        assert current() == inferledger.Context("u1", "t1")
-    assert current() == inferledger.Context()
+        assert current() == inference_tracker.Context("u1", "t1")
+    assert current() == inference_tracker.Context()
 
 
 def test_values_become_short_strings():
