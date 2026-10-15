@@ -153,3 +153,8 @@ input). From the context: user, task, and the call that made this one (`parent_p
 A busy or unreachable server is retried with growing waits. Records that still can't be sent, or
 that the server refuses, are written to the `inference_tracker` log as one JSON line each. Every batch
 also tells the server how many records were lost since the last one that got through.
+
+## Adding it to an app
+
+[skills/add-tracking/SKILL.md](skills/add-tracking/SKILL.md) is a step-by-step guide, for people and for coding agents: find
+every AI call, say who each is for, wrap the clients, test, connect the bill, and check the numbers.

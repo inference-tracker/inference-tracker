@@ -1,0 +1,134 @@
+---
+name: add-tracking
+description: Add inference-tracker to an app, so every AI call it makes is recorded with the user and task it was for, and its exact cost can be taken from the provider's bill. Use when asked to track an app's AI calls, add per-user inference cost, or install inference-tracker in a repo.
+---
+
+# Adding inference-tracker to an app
+
+**The goal:** for every AI call the app makes, know who it was for (user, task) and what it cost. The
+app records the "who" at the moment of the call. The cost comes later from the provider's bill, never
+from a price list. Prompts, images and outputs are never recorded.
+
+Read the library's README first, and each provider's current docs for anything below that touches
+them. Provider APIs change; this guide only tells you what to look for.
+
+## 1. Find every AI call
+
+Search the whole app, including its background workers and any serverless apps it deploys:
+
+- `fal_client`, `fal.App` (fal)
+- `from openai`, `OpenAI(`, `AzureOpenAI(` (OpenAI, and Azure, which is called through the same package)
+- `from google import genai`, `genai.Client(` (Gemini and Veo, on Vertex or the Gemini API)
+- `httpx`, `requests.post`, `client.post(` to an AI host (raw HTTP calls, easy to miss)
+- anything else that sends work to a model: other SDKs, GPU hosts (RunPod, Modal), queues
+
+Write a list, one line per call site: file, provider, sync or async, and **how the result comes
+back**:
+
+- **direct**: the call returns the result.
+- **queue + webhook**: the call is submitted, and the result arrives later somewhere else.
+- **long-running operation**: the call returns an operation that is polled until done (Veo).
+- **inside another call**: the call is made by one of the app's own serverless apps, which was
+  itself called by the app.
+
+Also note which calls go to which account, project or resource. That is how bills are told apart.
+
+## 2. Decide who each call is for
+
+Find where the app knows the user and the task: usually where a task is created. Wrap that work:
+
+```python
+with inference_tracker.context(user_id=user_id, task_id=task_id):
+    ...  # every tracked call in here gets this user and task
+```
+
+Use the app's own stable user id (the one its analytics and payments use). Never an email.
+
+When the call happens somewhere that doesn't know the user, don't send the user id there. Link the
+call to its **parent** instead, and the dashboard finds the user by walking up the parents:
+
+- **A webhook** gets the result of a call another process sent. Record the finish with the
+  provider's webhook helper (`inference_tracker.fal.webhook(body)`); it joins the start by request id.
+- **The app's own fal apps**: wrap the endpoint in `inference_tracker.fal.inside(self)`. Every call
+  made inside gets the fal request the app is serving as its parent.
+- **fal workflows**: submit with the header `inference_tracker.fal.WORKFLOW_ENVELOPE_HEADER: "true"`
+  (only to `workflows/...` addresses). The result then lists each step, and each step is recorded
+  with the run as its parent. The app must read `output` from the result.
+
+## 3. Wrap the clients
+
+Wrap each client where it is created. The calls themselves don't change, and if recording fails the
+call still runs.
+
+| Package | Wrap with | Tracked |
+|---|---|---|
+| `fal_client` | `inference_tracker.fal.track(client)` | submit, subscribe, run, results, webhooks |
+| `openai` (OpenAI and Azure) | `inference_tracker.openai.track(client)` | responses, chat completions, images, raw `post` to an images route |
+| `google-genai` | `inference_tracker.google.track(client)` | generate_content, images, Veo (start and finish) |
+
+A call the wrappers don't cover (another SDK, raw HTTP): add a wrapper to the library, with tests,
+rather than recording it by hand in the app. Record by hand (`inference_tracker.record(...)`) only
+as a stopgap.
+
+Check what each wrapper records against the call's real response: run it once against the real
+SDK with a fake network, and look at the record. Usage the bill is split by (tokens by kind, seconds
+of video, images) must be there.
+
+## 4. Start the tracker
+
+Once per process, at startup:
+
+```python
+inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "test")
+```
+
+- The key comes from a secret, one per app. Without a key nothing is sent and the app runs as before.
+- **Serverless functions that freeze between requests** (Cloud Functions, Lambda): pass
+  `background=False`, and `flush=True` on the context, so records are sent before the function ends.
+- Local emulators often run with dummy secrets: send nothing there.
+
+## 5. Deploy to test, and look at the records
+
+Make a few real generations in test, then check:
+
+- Every call has a user, or a parent that leads to one. A call whose parent was never recorded
+  means something else called it (another app, a playground, a test tool): find out what.
+- Every `start` has its `finish`, except calls still running.
+- Batches report 0 records lost.
+- No record holds a prompt, an image, a URL or an output.
+
+Then production.
+
+## 6. Connect the cost
+
+The dashboard needs the provider's bill. Each kind of bill gives cost in its own way:
+
+- **Per request id** (fal's models): exact, matched by the request id on the record.
+- **A total per hour or day per model and kind** (Vertex per hour, Azure per day): each line is
+  split over the recorded calls by their usage of that kind: tokens in, tokens out, image tokens,
+  seconds of video.
+- **Machine time** (your own serverless apps on fal, GPU hosts): the machine's bill for the hour is
+  split over the requests that ran on it, evenly when several ran at once. What's left is idle time,
+  shown per app.
+
+## 7. Run the four-way check
+
+For whole hours or a whole day, before credits:
+
+1. The provider's own dashboard.
+2. The dashboard's copy of the bill. **1 and 2 must match exactly.**
+3. Any older estimate of per-user cost, if there is one.
+4. inference-tracker: the part tied to a user, plus every gap by name (idle machines, calls with no
+   user and why, calls that weren't recorded). **What's left unexplained must be about 0.** Where 3
+   exists, compare 3 and 4 call by call: same user, same cost.
+
+## Things that went wrong before
+
+- A provider's date range can include the whole hour its end names. Compare the same hours.
+- Providers can write the same name in different cases (an account in lowercase in one place,
+  uppercase in another). Compare names ignoring case.
+- Tell a fal workflow by its `workflows/` address, not by how the app labels it.
+- Text-only calls (prompt moderation, prompt rewriting, text-to-video) can't be tied to a task by
+  matching files. Only recording at the call finds their user.
+- A test tool pointed at production apps puts its cost on production. Point test tools at test apps.
+- A field that is stored never changes meaning. A new need gets a new field.
