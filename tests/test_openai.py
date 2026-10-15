@@ -78,6 +78,18 @@ class Client:
         self.images = NS(edit=lambda **kw: IMAGES)
 
 
+class Foundry:
+    """An AsyncOpenAI pointed at Azure AI Foundry, calling a FLUX model with a raw post."""
+
+    def __init__(self):
+        self.base_url = "https://acme-resource.services.ai.azure.com/openai/v1/"
+        self.posts = []
+
+    async def post(self, path, *, body=None, cast_to=None):
+        self.posts.append(path)
+        return IMAGES if "/images/" in path else {"ok": True}
+
+
 class AsyncClient:
     def __init__(self):
         self.base_url = "https://api.openai.com/v1/"
@@ -150,3 +162,15 @@ def test_tracking_problems_never_reach_the_app(records, monkeypatch):
 
     monkeypatch.setattr(inference_tracker.openai, "_units", boom)
     assert track(Client()).responses.parse(model="m", input="x") is RESPONSE
+
+
+def test_raw_post_to_an_images_route_is_tracked_like_images(records):
+    client = track(Foundry())
+    body = {"model": "FLUX.2-pro", "prompt": "a photo of my kid", "size": "1024x1024", "input_image": "..."}
+    assert asyncio.run(client.post("/images/generations", body=body, cast_to=object)) is IMAGES
+    assert asyncio.run(client.post("/files", body={"x": 1}, cast_to=object)) == {"ok": True}
+    (r,) = records
+    assert (r.provider, r.model, r.status) == ("azure.ai.openai", "FLUX.2-pro", "ok")
+    assert r.units["images"] == 2
+    assert r.settings == {"size": "1024x1024", "azure_resource": "acme-resource"}
+    assert "kid" not in repr(r.to_wire())

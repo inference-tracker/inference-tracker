@@ -8,8 +8,10 @@ OpenAI with an Azure base_url, as Azure AI Foundry suggests).
     response = client.responses.parse(model="gpt-5.4-mini", input=..., text_format=...)
 
 Tracked, one "call" record each (the whole call is seen here): responses.create / parse,
-chat.completions.create / parse (and beta.chat.completions.parse), images.generate / edit. Everything
-else passes through unchanged, and so do streamed calls (stream=True). The call itself is never changed,
+chat.completions.create / parse (and beta.chat.completions.parse), images.generate / edit, and a raw
+client.post() to an images route ("/images/generations", "/images/edits"), which is how Azure AI Foundry's
+other image models (FLUX, for example) are called. Everything else passes through unchanged, and so do
+streamed calls (stream=True). The call itself is never changed,
 and tracking never raises: a problem in it is logged and the call goes on.
 
 On the record: the model the response names (the one billed; the requested name, an Azure deployment for
@@ -45,6 +47,7 @@ PATHS = frozenset(
         ("beta", "chat", "completions", "parse"),
         ("images", "generate"),
         ("images", "edit"),
+        ("post",),  # only a raw call to an images route, see _images_post
     }
 )
 # Request arguments copied onto the record because they change the price.
@@ -56,6 +59,8 @@ def track(client: Any) -> Any:
     provider, resource = _where(client)
 
     def wrap(path: Path, method: Callable[..., Any], is_async: bool) -> Callable[..., Any]:
+        if path == ("post",):
+            return _images_post(method, is_async, provider, resource)
         if is_async:
 
             async def tracked_async(*args: Any, **kwargs: Any) -> Any:
@@ -87,6 +92,50 @@ def track(client: Any) -> Any:
         return tracked
 
     return Proxy(client, PATHS, wrap)
+
+
+def _images_post(method: Callable[..., Any], is_async: bool, provider: str, resource: str | None) -> Callable[..., Any]:
+    """client.post(path, body=..., cast_to=...): tracked like images.generate when path is an images route,
+    passed through otherwise."""
+
+    def images_body(args: tuple, kwargs: dict) -> dict | None:
+        route = kwargs.get("path", args[0] if args else None)
+        body = kwargs.get("body")
+        if isinstance(route, str) and "/images/" in route and isinstance(body, dict):
+            return body
+        return None
+
+    if is_async:
+
+        async def tracked_async(*args: Any, **kwargs: Any) -> Any:
+            body = images_body(args, kwargs)
+            if body is None:
+                return await method(*args, **kwargs)
+            call = _start(provider, resource, body)
+            try:
+                response = await method(*args, **kwargs)
+            except BaseException as e:
+                _end(call, ("images",), None, e)
+                raise
+            _end(call, ("images",), response, None)
+            return response
+
+        return tracked_async
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        body = images_body(args, kwargs)
+        if body is None:
+            return method(*args, **kwargs)
+        call = _start(provider, resource, body)
+        try:
+            response = method(*args, **kwargs)
+        except BaseException as e:
+            _end(call, ("images",), None, e)
+            raise
+        _end(call, ("images",), response, None)
+        return response
+
+    return tracked
 
 
 def _where(client: Any) -> tuple[str, str | None]:
