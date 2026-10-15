@@ -111,16 +111,17 @@ The dashboard needs the provider's bill. Each kind of bill gives cost in its own
   split over the requests that ran on it, evenly when several ran at once. What's left is idle time,
   shown per app.
 
-## 7. Run the four-way check
+## 7. Check the numbers
 
-For whole hours or a whole day, before credits:
+Take whole hours or a whole day, before any credits or discounts the provider adds later. Two checks:
 
-1. The provider's own dashboard.
-2. The dashboard's copy of the bill. **1 and 2 must match exactly.**
-3. Any older estimate of per-user cost, if there is one.
-4. inference-tracker: the part tied to a user, plus every gap by name (idle machines, calls with no
-   user and why, calls that weren't recorded). **What's left unexplained must be about 0.** Where 3
-   exists, compare 3 and 4 call by call: same user, same cost.
+1. **The bill is copied right.** The provider's own dashboard and the copy of its bill must match
+   exactly, line by line. Watch the time range: compare exactly the same hours, in UTC.
+2. **The records explain the bill.** Of the bill, how much is tied to a user, and what is the rest?
+   Every gap gets a name: machines that were on with nothing running, calls with no user (and why:
+   their parent was never recorded, something else called them), calls that were never recorded.
+   What's left unexplained must be about 0. If it isn't, something is calling the provider that
+   step 1 missed.
 
 ## Things that went wrong before
 
