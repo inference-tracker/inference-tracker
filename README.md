@@ -103,6 +103,39 @@ async def generate(self, input: Input) -> Output:
 The request id comes from fal's `self.current_request`. Without one (the app runs outside fal), the
 block does nothing.
 
+## OpenAI and Azure (the `openai` package)
+
+```python
+from openai import OpenAI
+import inference_tracker
+
+client = inference_tracker.openai.track(OpenAI(api_key=...))
+response = client.responses.parse(model="gpt-5.4-mini", input=..., text_format=...)
+```
+
+Works the same for `AsyncOpenAI`, `AzureOpenAI`, and an `OpenAI` client pointed at Azure AI Foundry
+(`base_url="https://<resource>.services.ai.azure.com/openai/v1/"`). Tracked: `responses.create` /
+`parse`, `chat.completions.create` / `parse`, `images.generate` / `edit`. Each is one record with the
+response id, the model the response names, and the tokens by kind (input, cached input, output,
+reasoning) or images. Azure calls also note their resource name, which is how Azure's bill is split.
+Streamed calls pass through untracked.
+
+## Google (the `google-genai` package)
+
+```python
+from google import genai
+import inference_tracker
+
+client = inference_tracker.google.track(genai.Client(vertexai=True, project=..., location=...))
+response = client.models.generate_content(model="gemini-3.1-flash-image", contents=..., config=...)
+```
+
+Tracked, sync and `client.aio`: `models.generate_content`, `generate_images`, `edit_image` (one record
+each, with tokens by kind: text and image, in and out, thinking, cached), and Veo's
+`models.generate_videos`: a "start" when it is sent and a "finish" when `operations.get()` returns the
+operation done, with the seconds of video made. Settings that change the price (resolution, length,
+audio, image size, aspect ratio, thinking) and the Google Cloud project are noted.
+
 ## What a record holds
 
 One record per call. A call whose result arrives somewhere else (a queued call, a webhook) gets two:

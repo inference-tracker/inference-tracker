@@ -1,6 +1,6 @@
 """inference_tracker: records each inference call with who it was for."""
 
-from . import fal
+from . import fal, google, openai
 from ._client import Client, flush, init, record, shutdown
 from ._context import Context, context, current
 from ._record import Record, error_name
@@ -14,6 +14,8 @@ __all__ = [
     "current",
     "error_name",
     "fal",
+    "google",
+    "openai",
     "flush",
     "init",
     "record",
