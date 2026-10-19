@@ -133,3 +133,11 @@ Take whole hours or a whole day, before any credits or discounts the provider ad
   matching files. Only recording at the call finds their user.
 - A test tool pointed at production apps puts its cost on production. Point test tools at test apps.
 - A field that is stored never changes meaning. A new need gets a new field.
+- An hourly bill puts a call in the hour it *finished*, not the hour it started. A video started at
+  10:59 and done at 11:00 is on the 11:00 line. Match calls to bill hours by finish time.
+- A call that fails the app's own check of the answer (a structured output that doesn't fit its
+  format) was still answered, so it's still billed. Record its usage anyway. Whole calls missing
+  show up as the same small share missing on every kind of usage (input, output, cached).
+- When the share of an uneven bill line that isn't explained is the same for every kind of usage,
+  look for whole calls that weren't recorded with their usage, not for one kind of token being
+  counted wrong.
