@@ -174,3 +174,110 @@ def test_raw_post_to_an_images_route_is_tracked_like_images(records):
     assert r.units["images"] == 2
     assert r.settings == {"size": "1024x1024", "azure_resource": "acme-resource"}
     assert "kid" not in repr(r.to_wire())
+
+
+class FormatError(Exception):
+    """Stands in for pydantic's ValidationError: the answer didn't fit the format the app asked for."""
+
+
+class RawAnswer:
+    """Shaped like the openai package's LegacyAPIResponse: the answer, not parsed yet."""
+
+    def __init__(self, body, fits=True):
+        self.body = body
+        self.fits = fits
+        self.http_response = NS(json=lambda: body)
+
+    def parse(self):
+        if not self.fits:
+            raise FormatError("the answer quotes the prompt")
+        return RESPONSE
+
+
+class RawResponses(Responses):
+    """Responses with the SDK's with_raw_response next to parse, as the real one has."""
+
+    def __init__(self, fits=True):
+        super().__init__()
+        body = {"id": "resp_2", "model": "gpt-5.4-nano-2026-03-17", "usage": {"input_tokens": 900, "output_tokens": 30}}
+        self.with_raw_response = NS(parse=lambda **kw: RawAnswer(body, fits))
+
+
+def test_parse_goes_through_the_raw_answer_and_returns_the_same_result(records):
+    client = Client()
+    client.responses = RawResponses()
+    assert track(client).responses.parse(model="gpt-5.4-nano", input="x") is RESPONSE
+    assert records[0].status == "ok"
+
+
+def test_parse_that_fails_the_format_check_keeps_the_billed_usage(records):
+    client = Client(base_url="https://acme-resource.services.ai.azure.com/openai/v1/")
+    client.responses = RawResponses(fits=False)
+    with pytest.raises(FormatError):
+        track(client).responses.parse(model="gpt-5.4-nano", input="a photo of my kid")
+    (r,) = records
+    assert (r.status, r.error_type, r.request_id) == ("error", "FormatError", "resp_2")
+    assert r.model == "gpt-5.4-nano-2026-03-17"
+    assert r.units == {"input_tokens": 900, "output_tokens": 30}
+    assert "kid" not in repr(r.to_wire())
+
+
+def test_with_the_real_openai_package(records):
+    """The openai package itself, over a fake network: a parse call returns what it would untracked, and
+    one whose answer doesn't fit the format raises the same error, with the usage on the record."""
+    openai = pytest.importorskip("openai")
+    httpx = pytest.importorskip("httpx")
+    from pydantic import BaseModel, ValidationError
+
+    class Output(BaseModel):
+        result: str
+        is_safe: bool
+
+    def answer(text):
+        return {
+            "id": "resp_3",
+            "object": "response",
+            "created_at": 0,
+            "model": "gpt-5.4-mini-2026-03-17",
+            "status": "completed",
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+            "tools": [],
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 700,
+                "output_tokens": 20,
+                "total_tokens": 720,
+                "input_tokens_details": {"cached_tokens": 512},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        }
+
+    texts = ['{"result": "hello", "is_safe": true}', '{"result": "hel']
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=answer(texts.pop(0))))
+
+    def client():
+        return openai.OpenAI(
+            api_key="sk-test",
+            base_url="https://acme.openai.azure.com/openai/v1/",
+            http_client=httpx.Client(transport=transport),
+            max_retries=0,
+        )
+
+    out = track(client()).responses.parse(model="gpt-5.4-mini", input="x", text_format=Output)
+    assert out.output_parsed == Output(result="hello", is_safe=True)
+    assert out.id == "resp_3"
+    with pytest.raises(ValidationError):
+        track(client()).responses.parse(model="gpt-5.4-mini", input="x", text_format=Output)
+    ok, failed = records
+    assert (ok.status, ok.units["input_tokens"]) == ("ok", 700)
+    assert (failed.status, failed.error_type, failed.request_id) == ("error", "ValidationError", "resp_3")
+    assert failed.units == {"input_tokens": 700, "output_tokens": 20, "cached_input_tokens": 512, "reasoning_tokens": 0}

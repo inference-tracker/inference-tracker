@@ -14,6 +14,11 @@ other image models (FLUX, for example) are called. Everything else passes throug
 streamed calls (stream=True). The call itself is never changed,
 and tracking never raises: a problem in it is logged and the call goes on.
 
+A parse call whose answer doesn't fit the format the app asked for raises after the provider has answered
+and billed. So parse calls go through the SDK's own with_raw_response, and the answer is parsed here, the
+same way the SDK does it: when parsing fails, the record still gets the usage the answer reports, and the
+app gets the same error as before.
+
 On the record: the model the response names (the one billed; the requested name, an Azure deployment for
 example, goes in settings when it differs), the response id, the usage the response reports (tokens by
 kind, images), and settings that change the price (reasoning effort, service tier, image size, quality,
@@ -23,6 +28,7 @@ count). Never prompts, images or outputs. For Azure, settings also hold the reso
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -61,6 +67,7 @@ def track(client: Any) -> Any:
     def wrap(path: Path, method: Callable[..., Any], is_async: bool) -> Callable[..., Any]:
         if path == ("post",):
             return _images_post(method, is_async, provider, resource)
+        raw = _raw_parse(path, method)
         if is_async:
 
             async def tracked_async(*args: Any, **kwargs: Any) -> Any:
@@ -68,10 +75,20 @@ def track(client: Any) -> Any:
                     return await method(*args, **kwargs)
                 call = _start(provider, resource, kwargs)
                 try:
-                    response = await method(*args, **kwargs)
+                    answer = await (raw or method)(*args, **kwargs)
                 except BaseException as e:
                     _end(call, path, None, e)
                     raise
+                if raw is None:
+                    response = answer
+                else:
+                    try:
+                        response = answer.parse()
+                        if inspect.isawaitable(response):
+                            response = await response
+                    except BaseException as e:
+                        _end(call, path, _body(answer), e)
+                        raise
                 _end(call, path, response, None)
                 return response
 
@@ -82,16 +99,46 @@ def track(client: Any) -> Any:
                 return method(*args, **kwargs)
             call = _start(provider, resource, kwargs)
             try:
-                response = method(*args, **kwargs)
+                answer = (raw or method)(*args, **kwargs)
             except BaseException as e:
                 _end(call, path, None, e)
                 raise
+            if raw is None:
+                response = answer
+            else:
+                try:
+                    response = answer.parse()
+                except BaseException as e:
+                    _end(call, path, _body(answer), e)
+                    raise
             _end(call, path, response, None)
             return response
 
         return tracked
 
     return Proxy(client, PATHS, wrap)
+
+
+def _raw_parse(path: Path, method: Callable[..., Any]) -> Callable[..., Any] | None:
+    """The SDK's with_raw_response version of a parse method: it sends the same request and returns the
+    answer unparsed (its parse() then does what the plain method would have). None when there isn't one."""
+    if path[-1] != "parse":
+        return None
+    try:
+        raw = getattr(getattr(method, "__self__", None), "with_raw_response", None)
+        found = getattr(raw, "parse", None)
+        return found if callable(found) else None
+    except Exception:
+        return None
+
+
+def _body(answer: Any) -> Any:
+    """The answer's JSON body, for its id, model and usage. None when it can't be read."""
+    try:
+        return answer.http_response.json()
+    except Exception:
+        logger.debug("inference_tracker: could not read the body of an answer that failed to parse", exc_info=True)
+        return None
 
 
 def _images_post(method: Callable[..., Any], is_async: bool, provider: str, resource: str | None) -> Callable[..., Any]:
@@ -173,14 +220,17 @@ def _end(call: tuple[Record, float] | None, path: Path, response: Any, error: Ba
     record, clock = call
     try:
         record.duration_s = round(time.monotonic() - clock, 3)
+        # An error can still come with an answer (a parse call whose answer didn't fit the format): the
+        # provider billed it, so its id, model and usage go on the record too.
         if error is not None:
             record.status = "error"
             code = getattr(error, "code", None)
             record.error_type = code if isinstance(code, str) and code else error_name(error)
-            record.request_id = getattr(error, "request_id", None) or None
+            record.request_id = getattr(error, "request_id", None) or get(response, "id") or None
         else:
             record.status = "ok"
             record.request_id = get(response, "id") or getattr(response, "_request_id", None)
+        if response is not None:
             answered = get(response, "model")
             if isinstance(answered, str) and answered and answered != record.model:
                 if record.model:
