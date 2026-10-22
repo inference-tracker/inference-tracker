@@ -1,6 +1,6 @@
 ---
 name: add-tracking
-description: Add inference-tracker to an app, so every AI call it makes is recorded with the user and task it was for, and its exact cost can be taken from the provider's bill. Use when asked to track an app's AI calls, add per-user inference cost, or install inference-tracker in a repo.
+description: Add inference-tracker to one app, through a pull request, so every AI call it makes is recorded with the user and task it was for, and its exact cost can be taken from the provider's bill. Use when asked to track an app's AI calls, add per-user inference cost, or install inference-tracker in a repo. Starts from the list the find-ai-calls guide writes.
 ---
 
 # Adding inference-tracker to an app
@@ -12,26 +12,35 @@ from a price list. Prompts, images and outputs are never recorded.
 Read the library's README first, and each provider's current docs for anything below that touches
 them. Provider APIs change; this guide only tells you what to look for.
 
-## 1. Find every AI call
+## How to work
 
-Search the whole app, including its background workers and any serverless apps it deploys:
+- **One repo at a time, through a pull request.** Work on a new branch; never push to the default
+  branch or deploy to production yourself. The PR says what is tracked, what isn't yet, and why.
+- **Stop and ask** where only a person can decide, instead of guessing. Mainly: who a call is for when
+  the code doesn't say; whether code that looks dead still runs; which environment is test; whether a
+  library change is wanted. Ask once, with the options and what each would mean.
+- **The calls themselves don't change.** Same arguments, same results, same errors. If a change to a
+  call seems needed, ask.
 
-- `fal_client`, `fal.App` (fal)
-- `from openai`, `OpenAI(`, `AzureOpenAI(` (OpenAI, and Azure, which is called through the same package)
-- `from google import genai`, `genai.Client(` (Gemini and Veo, on Vertex or the Gemini API)
-- `httpx`, `requests.post`, `client.post(` to an AI host (raw HTTP calls, easy to miss)
-- anything else that sends work to a model: other SDKs, GPU hosts (RunPod, Modal), queues
+## 1. Start from the list of calls
 
-Write a list, one line per call site: file, provider, sync or async, and **how the result comes
-back**:
+Run the find-ai-calls guide on the repo first (or read the list it wrote). Check it is still current:
+same commit, or nothing that touches AI calls changed since. Everything below works through that list,
+line by line; a call that isn't on it is added to it first.
+
+For each call, the list says how the result comes back:
 
 - **direct**: the call returns the result.
 - **queue + webhook**: the call is submitted, and the result arrives later somewhere else.
-- **long-running operation**: the call returns an operation that is polled until done (Veo).
-- **inside another call**: the call is made by one of the app's own serverless apps, which was
-  itself called by the app.
+- **polled**: the call returns an operation or job id that is checked until done (Veo, a GPU host's
+  status route).
+- **stream**: the answer arrives in pieces; the usage comes with the last one.
+- **written to the database**: the worker writes the result onto the task itself, with no webhook. The
+  finish is recorded where the app notices the task changed, or by the worker.
+- **inside another call**: the call is made by one of the app's own serverless apps, or by a tool
+  inside an agent run, which was itself called by the app.
 
-Also note which calls go to which account, project or resource. That is how bills are told apart.
+Each needs its start and its finish recorded, wherever they happen.
 
 ## 2. Decide who each call is for
 
@@ -66,9 +75,9 @@ call still runs.
 | `openai` (OpenAI and Azure) | `inference_tracker.openai.track(client)` | responses, chat completions, images, raw `post` to an images route |
 | `google-genai` | `inference_tracker.google.track(client)` | generate_content, images, Veo (start and finish) |
 
-A call the wrappers don't cover (another SDK, raw HTTP): add a wrapper to the library, with tests,
-rather than recording it by hand in the app. Record by hand (`inference_tracker.record(...)`) only
-as a stopgap.
+A call the wrappers don't cover (another SDK, raw HTTP, a layer like LiteLLM): add a wrapper to the
+library, with tests, in its own pull request, rather than recording it by hand in the app. Record by
+hand (`inference_tracker.record(...)`) only as a stopgap, and say so in the PR.
 
 Check what each wrapper records against the call's real response: run it once against the real
 SDK with a fake network, and look at the record. Usage the bill is split by (tokens by kind, seconds
@@ -97,7 +106,7 @@ Make a few real generations in test, then check:
 - Batches report 0 records lost.
 - No record holds a prompt, an image, a URL or an output.
 
-Then production.
+Then open the PR for review. Production comes after it's merged, by whoever deploys the app.
 
 ## 6. Connect the cost
 
@@ -121,7 +130,8 @@ Take whole hours or a whole day, before any credits or discounts the provider ad
    Every gap gets a name: machines that were on with nothing running, calls with no user (and why:
    their parent was never recorded, something else called them), calls that were never recorded.
    What's left unexplained must be about 0. If it isn't, something is calling the provider that
-   step 1 missed.
+   the list of calls missed: add it to the list (and, if the find guide could have caught it, to that
+   guide).
 
 ## Things that went wrong before
 

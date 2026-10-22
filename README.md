@@ -156,5 +156,10 @@ also tells the server how many records were lost since the last one that got thr
 
 ## Adding it to an app
 
-[skills/add-tracking/SKILL.md](skills/add-tracking/SKILL.md) is a step-by-step guide, for people and for coding agents: find
-every AI call, say who each is for, wrap the clients, test, connect the bill, and check the numbers.
+Two step-by-step guides, for people and for coding agents:
+
+- [skills/find-ai-calls/SKILL.md](skills/find-ai-calls/SKILL.md) lists every AI call in a repo or a
+  whole folder of repos, and changes nothing.
+- [skills/add-tracking/SKILL.md](skills/add-tracking/SKILL.md) starts from that list and adds
+  tracking to one app, through a pull request: say who each call is for, wrap the clients, test,
+  connect the bill, and check the numbers.
