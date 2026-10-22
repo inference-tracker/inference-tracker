@@ -1,15 +1,18 @@
 ---
 name: find-ai-calls
-description: List every AI call in a repo or a whole folder of repos (provider, model, where in the code, how it's called, who it's for), without changing anything. Use when asked to find, list or count an app's AI calls, to see what an app spends on AI and where, or before adding inference-tracker to an app (the add-tracking guide starts from this list).
+description: Find every AI call in the current repo or folder (provider, model, where in the code, how it's called, who it's for) and which ones inference-tracker doesn't record yet. Changes no code; saves the list to .inference-tracker/calls.md, which the add-tracking command works from. Use when asked to find, list or count AI calls, to see what isn't tracked, or before adding tracking to an app.
 ---
 
 # Finding every AI call
 
 **The goal:** a list of every place the code sends work to an AI model or to a machine that runs one,
-with enough detail to track it later: who it's for, and which bill it lands on.
+saying for each whether inference-tracker already records it, with enough detail to track the rest:
+who it's for, and which bill it lands on. The add-tracking command works from this list and doesn't
+search again, so the list must be complete.
 
-**This changes nothing.** No edits, no commits, no branch switches, no installs, no deploys, and no
-calls to the providers. It only reads code and writes its report where the user asks (or prints it).
+**This changes no code.** No edits, no commits, no branch switches, no installs, no deploys, and no
+calls to the providers. Its only output is one file, `.inference-tracker/calls.md`, in the folder it
+was run in (step 5), plus a short summary in the chat.
 
 Code reading finds candidates. It can't see a provider chosen at runtime, calls made from outside the
 code on the same keys, or tell for sure live code from dead. Say so in the report instead of guessing;
@@ -149,7 +152,16 @@ runs on itself, and the calls it makes to others (listed in step 3 as "inside an
 Also note: test and dev twins of the same app (list once, name the twins and their keys), apps still
 built and deployed that nothing calls any more, and machines named in config whose code is in no repo.
 
-## 5. Write the report
+## 5. Write the list
+
+Save it to `.inference-tracker/calls.md` in the folder this was run in (create the folder; replace an
+older file, keeping nothing from it). It starts with:
+
+- the date, and each repo's branch and commit that were read (add-tracking checks them);
+- **To track:** every live call that isn't fully tracked, one line each with an id (`T1`, `T2`...), its
+  `file:line`, provider and model, and the library piece it needs. This is add-tracking's work list.
+
+Then the report below. In the chat, give only the summary line and the "To track" list.
 
 Name each app the way the company's own list of apps does (an analytics table, a config): ask the user
 where that list is. A repo that isn't on it (a shared engine, a tool) is reported, but not as an app.

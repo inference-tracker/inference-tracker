@@ -1,6 +1,6 @@
 ---
 name: add-tracking
-description: Add inference-tracker to one app, through a pull request, so every AI call it makes is recorded with the user and task it was for, and its exact cost can be taken from the provider's bill. Use when asked to track an app's AI calls, add per-user inference cost, or install inference-tracker in a repo. Starts from the list the find-ai-calls guide writes.
+description: Add inference-tracker to one app, through a pull request, so every AI call it makes is recorded with the user and task it was for, and its exact cost can be taken from the provider's bill. Use when asked to track an app's AI calls, add per-user inference cost, or install inference-tracker in a repo. Works from the list the find-ai-calls command saved in .inference-tracker/calls.md; it doesn't search the code again.
 ---
 
 # Adding inference-tracker to an app
@@ -24,9 +24,15 @@ them. Provider APIs change; this guide only tells you what to look for.
 
 ## 1. Start from the list of calls
 
-Run the find-ai-calls guide on the repo first (or read the list it wrote). Check it is still current:
-same commit, or nothing that touches AI calls changed since. Everything below works through that list,
-line by line; a call that isn't on it is added to it first.
+Read `.inference-tracker/calls.md` in this folder or the repo's root. **Don't search the code again:**
+the find-ai-calls command already did, and its "To track" list is the work.
+
+- No file: stop, and tell the user to run find-ai-calls first.
+- The code changed since (the commit in the file isn't the current one, and the change touches AI
+  calls): say so, and ask whether to run find-ai-calls again first.
+- Work through "To track" one id at a time. When one is done, mark it in the file (`done`, with the
+  commit). A call met on the way that isn't on the list is added to it, with a note that find missed
+  it, so the find-ai-calls guide can be fixed.
 
 For each call, the list says how the result comes back:
 
