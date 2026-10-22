@@ -8,7 +8,13 @@ requires-python = ">=3.10"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "fal-client>=1.0.3",
+    "httpx>=0.28.1",
+    "modal>=1.6.2",
+    "pytest>=8",
+    "requests>=2.34.2",
+]
 
 [build-system]
 requires = ["hatchling"]
