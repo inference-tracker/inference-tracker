@@ -9,14 +9,27 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "fal-client>=1.0.3",
     "google-cloud-aiplatform>=2.6.0",
     "google-genai>=2.32.0",
     "httpx>=0.28.1",
-    "litellm>=1.106.2",
+    "modal>=1.6.2",
     "openai>=3.36.1",
     "openai-agents>=0.24.0",
     "pytest>=8",
+    "requests>=2.34.2",
 ]
+# LiteLLM needs openai 2.x while the rest of the tests use openai 3.x: its tests run on their own,
+# with `uv run --no-default-groups --group litellm pytest tests/test_litellm.py`.
+litellm = [
+    "httpx>=0.28.1",
+    "litellm>=1.106.2",
+    "openai-agents>=0.20.0",
+    "pytest>=8",
+]
+
+[tool.uv]
+conflicts = [[{ group = "dev" }, { group = "litellm" }]]
 
 [build-system]
 requires = ["hatchling"]

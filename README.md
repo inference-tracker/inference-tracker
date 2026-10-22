@@ -103,6 +103,18 @@ async def generate(self, input: Input) -> Output:
 The request id comes from fal's `self.current_request`. Without one (the app runs outside fal), the
 block does nothing.
 
+### fal over HTTP
+
+For calls made with plain HTTP instead of `fal_client` (or from a subclass of its clients):
+
+```python
+http = inference_tracker.fal.track_http(httpx.Client())  # or httpx.AsyncClient, requests.Session,
+                                                         # a fal_client.SyncClient (subclasses too)
+```
+
+A submit to `queue.fal.run` is a "start", fetching the result a "finish", a call to `fal.run` one
+record. Other addresses pass through untouched. Use `track()` or `track_http()` on a client, not both.
+
 ## OpenAI and Azure (the `openai` package)
 
 ```python
@@ -118,7 +130,14 @@ Works the same for `AsyncOpenAI`, `AzureOpenAI`, and an `OpenAI` client pointed 
 `parse`, `chat.completions.create` / `parse`, `images.generate` / `edit`. Each is one record with the
 response id, the model the response names, and the tokens by kind (input, cached input, output,
 reasoning) or images. Azure calls also note their resource name, which is how Azure's bill is split.
-Streamed calls pass through untracked.
+
+Also tracked: `embeddings.create`, `moderations.create`, streams (`stream=True`, recorded when the
+stream ends, with the last chunk's usage; for chat completions pass
+`stream_options={"include_usage": True}`, or `ModelSettings(include_usage=True)` in the Agents SDK,
+else there is no usage), and copies made with `with_options`. An OpenAI client pointed at Vertex AI
+(`base_url="https://aiplatform.googleapis.com/v1beta1/projects/<p>/locations/<l>/endpoints/openapi"`)
+is recorded as Vertex, with its project and location. Works with the OpenAI Agents SDK: pass the
+tracked `AsyncOpenAI` to `set_default_openai_client` or to a model.
 
 ## Google (the `google-genai` package)
 
@@ -135,6 +154,33 @@ each, with tokens by kind: text and image, in and out, thinking, cached), and Ve
 `models.generate_videos`: a "start" when it is sent and a "finish" when `operations.get()` returns the
 operation done, with the seconds of video made. Settings that change the price (resolution, length,
 audio, image size, aspect ratio, thinking) and the Google Cloud project are noted.
+
+Also `models.embed_content` (tokens in), and the `vertexai` package's embeddings:
+`model = inference_tracker.google.track(TextEmbeddingModel.from_pretrained("text-embedding-005"))`.
+
+## LiteLLM (AWS Bedrock, and every other provider it routes to)
+
+```python
+inference_tracker.litellm.track()  # once at startup, after any `litellm.callbacks = [...]`
+```
+
+Every `litellm.completion` / `acompletion`, embedding, image and responses call is recorded, streamed or
+not, including calls the OpenAI Agents SDK's `LitellmModel` makes. Bedrock records carry the model or
+inference-profile id, the `x-amzn-requestid`, the region, and input, output, cache-read and cache-write
+tokens. Don't also pass a client wrapped by `inference_tracker.openai.track` to LiteLLM (`client=`), or
+the call is recorded twice.
+
+## Modal
+
+```python
+generate = inference_tracker.modal.function("video-app", "generate")
+generate.remote(args)                     # one record, timing only (Modal gives no call id here)
+call = generate.spawn(args); call.get()   # a "start" and a "finish", with the fc- call id
+http = inference_tracker.modal.track_http(httpx.Client(), apps=["video-app"])  # web endpoints
+```
+
+Inside a Modal function, `with inference_tracker.modal.inside():` makes the call the function is serving
+the parent of every tracked call in the block, like `fal.inside(self)`.
 
 ## What a record holds
 

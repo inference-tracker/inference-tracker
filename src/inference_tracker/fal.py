@@ -27,6 +27,9 @@ The server joins start and finish on provider + request id. A start without a fi
 process never saw the end of: the result went to a webhook that doesn't call webhook(), or the app
 gave up waiting.
 
+Apps that call fal's HTTP API themselves (httpx, requests, or their own methods on a fal_client subclass)
+use track_http(client) instead: the same records, read from the requests and answers. See track_http().
+
 Settings: of the arguments, only those named in `settings` are copied, the ones that change the price
 (resolution, duration, number of images...). Never the whole input: prompts and media URLs stay out.
 
@@ -46,6 +49,7 @@ from __future__ import annotations
 import contextvars
 import inspect
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -53,7 +57,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from . import _client
+from . import _client, _http
 from ._context import Context, context, current
 from ._record import Record, error_name
 
@@ -147,12 +151,16 @@ def webhook(body: Any, *, model: str | None = None) -> Record | None:
 def _webhook_error_type(body: Mapping[str, Any]) -> str:
     """fal puts the failure in a `detail` list, [{type, msg, error_code, loc}]: under payload for an app,
     deeper for a workflow (payload.error.body.detail). The code or type is taken, never the message."""
-    first = _first_detail(body.get("payload"))
+    return _detail_code(body.get("payload")) or "error"
+
+
+def _detail_code(data: Any) -> str | None:
+    first = _first_detail(data)
     if first is not None:
         for key in ("error_code", "type"):
             if isinstance(first.get(key), str) and first[key]:
                 return first[key]
-    return "error"
+    return None
 
 
 def _first_detail(data: Any, depth: int = 0) -> Mapping[str, Any] | None:
@@ -218,16 +226,23 @@ def _record_step(endpoint: Any, request_id: Any, run_id: str, error_type: str | 
 class _Call:
     """The record of one call while this process follows it."""
 
-    def __init__(self, application: str, arguments: Mapping[str, Any], settings: tuple[str, ...]):
+    def __init__(
+        self,
+        application: str,
+        arguments: Mapping[str, Any],
+        settings: tuple[str, ...],
+        started: tuple[float, float] | None = None,  # (unix seconds, time.monotonic()) when it was sent; now if None
+    ):
+        started_at, self._clock = started or (time.time(), time.monotonic())
         self.record = Record.new(
             PROVIDER,
             application,
             phase="start",
-            started_at=time.time(),
+            started_at=started_at,
             settings={k: arguments[k] for k in settings if k in arguments},
         )
-        self._clock = time.monotonic()
-        self.inference_seconds: float | None = None
+        self.units: dict[str, float] = {}  # fal's metrics (inference_seconds) and billing headers
+        self.envelope = False  # submitted over plain HTTP asking for a workflow's {output, nodes}
         self.done = False
 
     def submitted(self, request_id: str) -> None:
@@ -237,10 +252,12 @@ class _Call:
     def saw(self, status: Any) -> None:
         """A queue status answer. The completed one carries fal's metrics."""
         if type(status).__name__ == "Completed":
-            metrics = getattr(status, "metrics", None)
-            seconds = metrics.get("inference_time") if isinstance(metrics, Mapping) else None
-            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
-                self.inference_seconds = float(seconds)
+            self.saw_metrics(getattr(status, "metrics", None))
+
+    def saw_metrics(self, metrics: Any) -> None:
+        seconds = metrics.get("inference_time") if isinstance(metrics, Mapping) else None
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+            self.units["inference_seconds"] = float(seconds)
 
     def finish(self, error_type: str | None, result: Any = None) -> None:
         """`result` is what fal returned, for the steps of a workflow run."""
@@ -282,7 +299,7 @@ class _Call:
         return round(time.monotonic() - self._clock, 3)
 
     def _units(self) -> dict[str, float]:
-        return {"inference_seconds": self.inference_seconds} if self.inference_seconds is not None else {}
+        return dict(self.units)
 
 
 class _Tracker:
@@ -293,10 +310,18 @@ class _Tracker:
         self._open: OrderedDict[str, _Call] = OrderedDict()
         self._lock = threading.Lock()
 
-    def start(self, application: str, arguments: Any) -> _Call | None:
+    def start(
+        self,
+        application: str,
+        arguments: Any,
+        *,
+        settings: Iterable[str] | None = None,
+        started: tuple[float, float] | None = None,
+    ) -> _Call | None:
         """Before the call: its record."""
         try:
-            return _Call(application, arguments if isinstance(arguments, Mapping) else {}, self.settings)
+            arguments = arguments if isinstance(arguments, Mapping) else {}
+            return _Call(application, arguments, self.settings if settings is None else tuple(settings), started)
         except Exception:
             logger.exception("inference_tracker: could not start tracking a fal call")
             return None
@@ -314,6 +339,10 @@ class _Tracker:
     def take(self, request_id: Any) -> _Call | None:
         with self._lock:
             return self._open.pop(request_id, None)
+
+    def peek(self, request_id: Any) -> _Call | None:
+        with self._lock:
+            return self._open.get(request_id)
 
     def finish(self, call: _Call | None, error_type: str | None, result: Any = None) -> None:
         if call is not None:
@@ -547,6 +576,180 @@ class _AsyncClient(_Client):
         result = await self._client.cancel(application, request_id)
         _safe(self._tracker.finish, self._tracker.take(request_id), "cancelled")
         return result
+
+
+# --- over plain HTTP ---------------------------------------------------------------------------------
+
+QUEUE_HOSTS = frozenset({"queue.fal.run", "queue.falrun.com"})  # with the backup domain fal_client falls back to
+RUN_HOSTS = frozenset({"fal.run", "falrun.com"})
+ERROR_TYPE_HEADER = "x-fal-error-type"
+BILLABLE_UNITS_HEADER = "x-fal-billable-units"  # fal's own billing count, when an answer carries it
+# .../requests/<id>, .../requests/<id>/status, .../requests/<id>/cancel: the queue's URLs for one request
+_REQUEST_PATH = re.compile(r"^/(?P<app>.+?)/requests/(?P<id>[^/]+)(?P<rest>/.*)?$")
+
+# Requests submitted over plain HTTP and not finished yet, shared by every watched session: the result is
+# often fetched with another session than the one that submitted.
+_http_calls = _Tracker(SETTINGS)
+
+
+def track_http(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
+    """For apps that call fal's HTTP API themselves, without fal_client's methods. Watches the client's
+    answers from fal's hosts and returns the same client, of the same type:
+
+        http = inference_tracker.fal.track_http(httpx.Client())     # or httpx.AsyncClient, requests.Session
+
+    - POST https://queue.fal.run/<endpoint>: a "start" record with the request id from the answer
+      (not kept open when the URL has ?fal_webhook=...: webhook() records that finish).
+    - GET .../requests/<id>: the "finish" of a request submitted here, ok or with fal's error code, with
+      the inference time from a completed status seen before it and fal's x-fal-billable-units header
+      when the answer has it. An error answer that doesn't say what failed (no fal code, not a 5xx: the
+      request may still be running) leaves the request open. Submitted with the workflow envelope
+      header, the result's steps are recorded as with track().
+    - PUT .../requests/<id>/cancel, accepted: the finish, "cancelled".
+    - POST https://fal.run/<endpoint>: one "call" record with the request id from the x-fal-request-id
+      header.
+
+    Everything else (other hosts, status streams, uploads) passes through unseen. A failed answer's error
+    type is fal's code (x-fal-error-type, or the body's error_type or detail), else "http_<status>". A 5xx
+    without fal's request id header came from fal's gateway, not the app, and isn't recorded (fal_client
+    retries those). A request that gets no answer at all isn't recorded either.
+
+    A fal_client.SyncClient, or a subclass whose own methods call fal over HTTP, can be passed as it is:
+    its session is watched, so its SDK methods are recorded the same way. Use either track() or
+    track_http() on one client, not both, or calls are recorded twice. For a fal_client.AsyncClient (or a
+    subclass), whose session is made on first use, pass the session: track_http(await client._client)."""
+    watcher = _HttpWatcher(settings)
+    try:
+        if _http.watch(client, watcher):
+            return client
+        if inspect.iscoroutinefunction(getattr(client, "submit", None)):
+            logger.warning("inference_tracker: for a fal_client.AsyncClient, pass its session: await client._client")
+            return client
+        if not _http.watch(getattr(client, "_client", None), watcher):  # fal_client.SyncClient's session
+            logger.warning("inference_tracker: can't watch a %s for fal calls", type(client).__name__)
+    except Exception:
+        logger.exception("inference_tracker: could not watch a client for fal calls")
+    return client
+
+
+class _HttpWatcher:
+    name = "fal"
+
+    def __init__(self, settings: Iterable[str]):
+        self.settings = tuple(settings)
+
+    def accepts(self, host: str) -> bool:
+        return host in QUEUE_HOSTS or host in RUN_HOSTS
+
+    def wants_body(self, ex: _http.Exchange) -> bool:
+        kind, request_id, _ = _route(ex)
+        if kind == "submit":
+            return True  # the request id is in it; a failed one says why
+        if kind == "run":
+            return not ex.ok or _asks_envelope(ex)
+        call = _http_calls.peek(request_id)
+        if kind == "status":
+            return call is not None and ex.ok
+        if kind == "result":
+            return call is not None and (not ex.ok or call.envelope)
+        return False
+
+    def seen(self, ex: _http.Exchange) -> None:
+        kind, request_id, model = _route(ex)
+        if kind == "submit":
+            self._submitted(ex, model)
+        elif kind == "run":
+            self._ran(ex, model)
+        elif kind == "status":
+            call = _http_calls.peek(request_id)
+            if call is not None and isinstance(ex.body, Mapping) and ex.body.get("status") == "COMPLETED":
+                call.saw_metrics(ex.body.get("metrics"))
+        elif kind == "result":
+            self._result(ex, _http_calls.peek(request_id))
+        elif kind == "cancel" and ex.ok:
+            _http_calls.finish(_http_calls.peek(request_id), "cancelled")
+
+    def _start(self, ex: _http.Exchange, model: str) -> _Call | None:
+        arguments = ex.request_json() if self.settings else None  # read only for the settings copied from it
+        return _http_calls.start(model, arguments, settings=self.settings, started=(ex.started_at, ex.clock))
+
+    def _submitted(self, ex: _http.Exchange, model: str) -> None:
+        if not ex.ok:
+            if _from_fal(ex) and (call := self._start(ex, model)) is not None:
+                call.completed(ex.headers.get(REQUEST_ID_HEADER), _http_error_type(ex) or f"http_{ex.status}")
+            return
+        request_id = ex.body.get("request_id") if isinstance(ex.body, Mapping) else None
+        if not isinstance(request_id, str) or not request_id:
+            return
+        call = self._start(ex, model)
+        if call is not None:
+            call.envelope = _asks_envelope(ex)
+            _http_calls.submitted(call, request_id, keep="fal_webhook" not in ex.query)
+
+    def _ran(self, ex: _http.Exchange, model: str) -> None:
+        if not ex.ok and not _from_fal(ex):
+            return
+        call = self._start(ex, model)
+        if call is None:
+            return
+        _billable_units(ex, call)
+        request_id = ex.headers.get(REQUEST_ID_HEADER)
+        call.completed(request_id, None if ex.ok else _http_error_type(ex) or f"http_{ex.status}")
+        if ex.ok and _asks_envelope(ex):
+            _safe(_record_steps, ex.body, request_id)
+
+    def _result(self, ex: _http.Exchange, call: _Call | None) -> None:
+        if call is None:
+            return  # not submitted here (or already finished): nothing to finish
+        error_type = None if ex.ok else _http_error_type(ex)
+        if not ex.ok and error_type is None:
+            if ex.status < 500:
+                return  # doesn't say the request failed: it may still be running
+            error_type = f"http_{ex.status}"
+        _billable_units(ex, call)
+        _http_calls.finish(call, error_type, ex.body if ex.ok and call.envelope else None)
+
+
+def _route(ex: _http.Exchange) -> tuple[str | None, str | None, str]:
+    """What a request to fal's hosts was: ("submit" | "run" | "status" | "result" | "cancel" | None, the
+    request id in the URL, the endpoint in the URL)."""
+    if ex.host in RUN_HOSTS:
+        return "run", None, ex.path.strip("/")
+    match = _REQUEST_PATH.match(ex.path)
+    if match is None:
+        return ("submit" if ex.method == "POST" else None), None, ex.path.strip("/")
+    rest = (match["rest"] or "").rstrip("/")
+    kind = {("GET", ""): "result", ("GET", "/status"): "status", ("PUT", "/cancel"): "cancel"}.get((ex.method, rest))
+    return kind, match["id"], match["app"]
+
+
+def _asks_envelope(ex: _http.Exchange) -> bool:
+    return str(ex.request_headers.get(WORKFLOW_ENVELOPE_HEADER, "")).lower() == "true"
+
+
+def _from_fal(ex: _http.Exchange) -> bool:
+    """False for a 5xx that fal's gateway sent (no request id): the request never reached the app."""
+    return ex.status < 500 or REQUEST_ID_HEADER in ex.headers
+
+
+def _http_error_type(ex: _http.Exchange) -> str | None:
+    """fal's code for a failed answer: the x-fal-error-type header, or the body's error_type or detail.
+    Never the message. None when the answer has none."""
+    code = ex.headers.get(ERROR_TYPE_HEADER)
+    if isinstance(code, str) and code:
+        return code
+    body = ex.body
+    if isinstance(body, Mapping):
+        if isinstance(body.get("error_type"), str) and body["error_type"]:
+            return body["error_type"]
+        return _detail_code(body)
+    return None
+
+
+def _billable_units(ex: _http.Exchange, call: _Call) -> None:
+    units = _http.header_number(ex.headers, BILLABLE_UNITS_HEADER)
+    if units is not None:
+        call.units["billable_units"] = units
 
 
 # --- helpers ----------------------------------------------------------------------------------
