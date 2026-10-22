@@ -148,12 +148,18 @@ def test_async_client(records):
     assert records[0].request_id == "chatcmpl-1"
 
 
-def test_streams_and_other_methods_pass_through(records):
+def test_other_methods_pass_through(records):
     client = track(Client())
-    assert list(client.responses.create(model="m", input="x", stream=True)) == ["chunk"]
     assert client.responses.retrieve("resp_1") is RESPONSE
     assert client.api_key == "sk-..."
     assert records == []
+
+
+def test_a_stream_that_is_not_the_sdks_is_returned_as_is_and_recorded_without_usage(records):
+    client = track(Client())
+    assert list(client.responses.create(model="m", input="x", stream=True)) == ["chunk"]
+    (r,) = records
+    assert (r.model, r.status, r.units) == ("m", "ok", {})
 
 
 def test_tracking_problems_never_reach_the_app(records, monkeypatch):
