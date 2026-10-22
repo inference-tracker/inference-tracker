@@ -151,6 +151,13 @@ built and deployed that nothing calls any more, and machines named in config who
 
 ## 5. Write the report
 
+Name each app the way the company's own list of apps does (an analytics table, a config): ask the user
+where that list is. A repo that isn't on it (a shared engine, a tool) is reported, but not as an app.
+
+When a bill or a cost dashboard is at hand, check every call that looks live or untracked against it:
+code that is still selectable may not have run for months. Say "dead (bill: last on <date>)" rather
+than reporting it as a gap.
+
 One report per app, in this order:
 
 1. **Summary:** one line: live call sites, providers, how many are tracked, missing library pieces.
