@@ -23,6 +23,11 @@ the bill settles it later (the add-tracking guide, "Check the numbers").
 - **Find what actually runs.** The default branch (`git symbolic-ref refs/remotes/origin/HEAD`) is
   often it, but not always: read the CI and deploy files to see which branch or tag ships to
   production, and compare. Apps deployed one by one from tags may run older code than the branch.
+- **Apps deployed one by one from tags:** take each app's newest production tag and compare its AI-call
+  code with the default branch; say where they differ. An app with no deploy record (no tags, deployed
+  by hand): say so.
+- **Also read the branch the team merges into** (the next release; see recent merged pull requests).
+  Calls that exist only there are listed as "coming": add-tracking works on that branch.
 - **Read it as the remote has it.** Fetch (this changes no files), then read that branch or tag, for
   example by exporting it with `git archive` to a scratch folder. Never switch the checkout's branch.
   Note uncommitted work or a remote that no longer exists.
@@ -94,7 +99,8 @@ and RunPod deploy scripts. Switches that look live but aren't: a percentage or r
 always one side, a flag that's off.
 
 **Where a runtime choice is read:** database collections and config files that name the provider,
-model, endpoint or key per task. Seed files and one-off admin scripts that update them hint at the
+model, endpoint or key per task. With the user's OK, read the production config itself, read-only: it
+settles most "can't tell" items. Seed files and one-off admin scripts that update them hint at the
 current values (docs can be out of date).
 
 **From the mobile or web app:** direct calls to providers, the backend functions it calls
@@ -112,8 +118,9 @@ work with no model (a video render on a GPU host) still costs machine time: list
 ## 3. Write one line per call
 
 One line per call site and model. Split a line when one site serves several calls that are tracked
-differently (two models, one covered and one not); group identical ones (the same agent code run with
-seven configs) into one line with the count.
+differently (two models, one covered and one not), or whose callers differ in who the call is for or
+which provider they can pick; group the rest (the same agent code run with seven alike configs) into
+one line with the count.
 
 | Field | What to write |
 |---|---|
@@ -122,10 +129,10 @@ seven configs) into one line with the count.
 | How it's called | SDK (which package), raw HTTP, through a layer (Agents SDK, LiteLLM...), or the provider is picked at runtime (from where) |
 | How the result comes back | **direct**; **stream**; **queue + webhook** (name the handler); **polled** until done (Veo, a GPU host's `/status`); **written to the database** by the worker (no webhook: the finish is only seen in the task document); **inside another call** (made by one of the app's own serverless apps, or by a tool inside an agent run) |
 | Who it's for | where the code knows the user and the task at that point: a user id, a task id only, or nothing (then: what called it, so it can be linked to its parent) |
-| Calls per use | how many billed calls one user action can make here: retries (a retried video is a new paid video), fallbacks to another model, one call per video frame, agent turns |
-| Account | the key, project, resource or region. Say whether it's a separate account or a separate key on a shared account, and which other apps or tools share it. That's how bills are told apart |
+| Calls per use | how many billed calls one user action can make here: retries (check retry decorators and their defaults: a retried video is a new paid video), fallbacks to another model, one call per video frame, agent turns |
+| Account | the key, project, resource or region. Say whether it's a separate account or a separate key on a shared account, and which other apps or tools share it. That's how bills are told apart; say so when the bill can't split them (one key used by two code paths, a provider whose bill has no per-key split) |
 | Live? | **live** (reachable from a deployed entry point); **live if config points at it** (name the config); **called from outside the code** (by a workflow built on the provider's platform, another app, a tool); **maybe dead** (say why); add **not app traffic** for scripts, tests, evals and internal tools, which are still on the same bill if they use the same key |
-| Tracked | **tracked**; **partly** (the client is wrapped but this method or route isn't covered, or the wrapper would record the wrong provider, as for Vertex behind an OpenAI client); **wrapper exists, not used**; **no wrapper** (name the missing piece); **no library for this language** |
+| Tracked | **tracked**; **partly** (the client is wrapped but this method or route isn't covered, the wrapper would record the wrong provider, as for Vertex behind an OpenAI client, or it covers only some of the providers a runtime choice can pick); **wrapper exists, not used**; **no wrapper** (name the missing piece); **no library for this language** |
 
 **Provider by address, not by package.** An `OpenAI` client with a `base_url` pointed at Vertex,
 Azure, a router or a local server is that provider. Say both.
@@ -174,7 +181,8 @@ One report per app, in this order:
 
 1. **Summary:** one line: live call sites, providers, how many are tracked, missing library pieces.
 2. **Repos read:** each repo, the branch or tag read, commit and date. Copies and what they copy.
-3. **Calls:** the table from step 3, live calls first.
+3. **Calls:** the table from step 3, live calls first, then "coming" (step 1), then "dead (bill: last
+   on <date>)".
 4. **Machines:** from step 4.
 5. **Outside this folder:** backends the app calls whose code isn't here, machines with no code,
    workflows built on the provider's platform.

@@ -14,8 +14,13 @@ them. Provider APIs change; this guide only tells you what to look for.
 
 ## How to work
 
-- **One repo at a time, through a pull request.** Work on a new branch; never push to the default
-  branch or deploy to production yourself. The PR says what is tracked, what isn't yet, and why.
+- **One repo at a time, through a pull request,** into the branch the team merges into (see recent
+  merged pull requests). Work on a new branch in a separate worktree, never in someone's checkout;
+  never push to the default branch or deploy to production yourself. The PR says what is tracked, what
+  isn't yet, and why. If that branch has moved on since the list was made, check each "To track" item
+  there first: mark the ones that are gone, add the new ones.
+- **The key comes first.** Nothing is recorded, and step 5 can't run, until the app has its key: ask
+  for it at the start.
 - **Stop and ask** where only a person can decide, instead of guessing. Mainly: who a call is for when
   the code doesn't say; whether code that looks dead still runs; which environment is test; whether a
   library change is wanted. Ask once, with the options and what each would mean.
@@ -58,7 +63,8 @@ with inference_tracker.context(user_id=user_id, task_id=task_id):
     ...  # every tracked call in here gets this user and task
 ```
 
-Use the app's own stable user id (the one its analytics and payments use). Never an email.
+Use the app's own stable user id (the one its analytics and payments use). Never an email. A call
+made before the task exists (moderating the prompt that creates it) is recorded with the user only.
 
 When the call happens somewhere that doesn't know the user, don't send the user id there. Link the
 call to its **parent** instead, and the dashboard finds the user by walking up the parents:
@@ -99,6 +105,13 @@ inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "tes
 ```
 
 - The key comes from a secret, one per app. Without a key nothing is sent and the app runs as before.
+- **A secret bound to a function must exist in every project its branch deploys to** (test and
+  production) before the pull request is merged, or the deploy fails. Say so in the PR.
+- **fal apps:** fal secrets are shared by the whole account, so one secret serves the app's test and
+  production versions. Add the library to the package list each app installs from (often its own
+  list, not the repo's main one). Code fal ships with the app but doesn't install (the app's own
+  helper folders) must be imported at the top of the file, not inside a method.
+- Calls made on another thread or a background loop must still see the user and task: check one.
 - **Serverless functions that freeze between requests** (Cloud Functions, Lambda): pass
   `background=False`, and `flush=True` on the context, so records are sent before the function ends.
 - Local emulators often run with dummy secrets: send nothing there.
