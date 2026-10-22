@@ -28,7 +28,7 @@ class Proxy:
         value = getattr(self._target, name)
         path = self._path + (name,)
         if path in self._paths and callable(value):
-            return self._wrap(path, value, inspect.iscoroutinefunction(value))
+            return self._wrap(path, value, _is_async(value))
         if any(p[: len(path)] == path for p in self._paths):
             return Proxy(value, self._paths, self._wrap, path)
         return value
@@ -38,6 +38,15 @@ class Proxy:
 
     def __repr__(self) -> str:
         return f"<tracked {self._target!r}>"
+
+
+def _is_async(method: Any) -> bool:
+    """Whether calling the method gives a coroutine. A decorator can hide it (openai's AsyncCompletions.create
+    is wrapped in a plain function that checks its arguments), so the function it wraps is looked at too."""
+    try:
+        return inspect.iscoroutinefunction(method) or inspect.iscoroutinefunction(inspect.unwrap(method))
+    except Exception:
+        return False
 
 
 def get(obj: Any, *names: str) -> Any:
