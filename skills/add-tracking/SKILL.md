@@ -24,7 +24,8 @@ them. Provider APIs change; this guide only tells you what to look for.
 
 ## 1. Start from the list of calls
 
-Read `.inference-tracker/calls.md` in this folder or the repo's root. **Don't search the code again:**
+Read `.inference-tracker/calls.md` in this folder or the nearest folder above it (find may have been
+run on a folder holding several repos). **Don't search the code again:**
 the find-ai-calls command already did, and its "To track" list is the work.
 
 - No file: stop, and tell the user to run find-ai-calls first.
