@@ -140,6 +140,11 @@ Azure, a router or a local server is that provider. Say both.
 **A provider picked at runtime:** list every provider the code can pick, and where the choice is read.
 Which one runs today can't be known from code: say so.
 
+**Recorded wrong** counts as not tracked: a webhook that records the result before checking whether
+the task already finished (a resent webhook records it twice), code that stops waiting on a provider
+without cancelling it (the provider keeps running and billing, the record never finishes), records sent
+in a way that can slow the app's own work (waiting on the send before answering).
+
 **Is it really tracked?** Check all of these, in the repo's own code and the library version it pins:
 
 - the wrapper covers this exact method and route (read the library's module docs or source, not only
@@ -165,8 +170,10 @@ Save it to `.inference-tracker/calls.md` in the folder this was run in (create t
 older file, keeping nothing from it). It starts with:
 
 - the date, and each repo's branch and commit that were read (add-tracking checks them);
-- **To track:** every live call that isn't fully tracked, one line each with an id (`T1`, `T2`...), its
-  `file:line`, provider and model, and the library piece it needs. This is add-tracking's work list.
+- **To track:** every live call that isn't fully tracked, or is tracked but recorded wrong (see below),
+  one line each with an id (`T1`, `T2`...), its `file:line`, provider and model, and the library piece
+  or fix it needs. This is add-tracking's work list.
+- **Left out on purpose:** calls the user decided not to track, with the reason. Never in "To track".
 
 Then the report below. In the chat, give only the summary line and the "To track" list.
 
@@ -175,7 +182,10 @@ where that list is. A repo that isn't on it (a shared engine, a tool) is reporte
 
 When a bill or a cost dashboard is at hand, check every call that looks live or untracked against it:
 code that is still selectable may not have run for months. Say "dead (bill: last on <date>)" rather
-than reporting it as a gap.
+than reporting it as a gap, per model when one line serves several, and say from which date each bill's
+copy starts, so "never billed" has a bound. A provider with no bill to read (no billing API, only a
+dashboard): say so, and point to whatever shows the call ran (the machine time of the app that makes
+it).
 
 One report per app, in this order:
 

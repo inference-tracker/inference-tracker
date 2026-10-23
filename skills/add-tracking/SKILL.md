@@ -155,6 +155,15 @@ Take whole hours or a whole day, before any credits or discounts the provider ad
 
 ## Things that went wrong before
 
+- A webhook recorded the result before checking "is this task already finished?", so a resent webhook
+  wrote a second finish. Record only after that check, and after the webhook's own work, so sending
+  never delays the result.
+- Code that stops waiting for a provider (a timeout, a cancelled task) left it running and billing, and
+  the record never finished. Cancel the provider's request when the app gives up, in its own commit:
+  it's a change in behaviour the team should see.
+- Records were sent before answering, and a slow dashboard slowed the app. Send at the end of the
+  outermost block; the library keeps that send short and skips it for a while after a failure.
+
 - A provider's date range can include the whole hour its end names. Compare the same hours.
 - Providers can write the same name in different cases (an account in lowercase in one place,
   uppercase in another). Compare names ignoring case.
