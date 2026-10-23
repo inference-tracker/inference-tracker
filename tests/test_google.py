@@ -15,6 +15,7 @@ from inference_tracker.google import track
 def records(monkeypatch):
     out = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 
@@ -182,3 +183,28 @@ def test_gemini_api_has_no_project(records):
     c._api_client = NS(vertexai=False, project=None)
     track(c).models.generate_content(model="gemini-3.1-flash", contents=["x"])
     assert records[0].provider == "gcp.gemini" and "gcp_project" not in records[0].settings
+
+
+def test_a_call_the_app_stops_waiting_for_is_cancelled(records):
+    class Slow:
+        async def generate_content(self, **kwargs):
+            await asyncio.sleep(60)
+
+    c = client()
+    c.aio = NS(models=Slow())
+
+    async def main():
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(track(c).aio.models.generate_content(model="gemini-3.1-flash", contents=["x"]), 0.1)
+
+    asyncio.run(main())
+    (r,) = records
+    assert (r.phase, r.status, r.error_type) == ("call", "cancelled", "CancelledError")
+
+
+def test_without_a_client_nothing_is_done(monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    track(client()).models.generate_content(model="gemini-3.1-flash-image", contents=["x"])
+    assert out == []

@@ -77,6 +77,7 @@ def fal(monkeypatch):
 def sent(monkeypatch):
     out: list[Record] = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 

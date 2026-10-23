@@ -40,6 +40,8 @@ class Context:
 
 
 _current: contextvars.ContextVar[Context] = contextvars.ContextVar("inference_tracker_context", default=Context())  # noqa: B039 (Context is frozen)
+# Inside a context(flush=True) block: an inner block with flush=True leaves the flush to the outer one.
+_flushing: contextvars.ContextVar[bool] = contextvars.ContextVar("inference_tracker_flushing", default=False)
 
 
 def current() -> Context:
@@ -56,7 +58,9 @@ def context(
     flush: bool = False,
 ) -> Generator[Context, None, None]:
     """Values left out are kept from the outer context. flush=True sends what's waiting when the
-    block ends: for runtimes that freeze the process after the response (see _client.py)."""
+    block ends: for runtimes that freeze the process after the response (see _client.py). Only the
+    outermost block with flush=True flushes: blocks inside it leave it to that one, so nesting them
+    costs one flush, not one per block."""
     given = {
         "user_id": user_id,
         "task_id": task_id,
@@ -65,11 +69,15 @@ def context(
     }
     changes = {k: c for k, v in given.items() if v is not None and (c := _clean(v)) is not None}
     token = _current.set(replace(_current.get(), **changes))
+    flushes = flush and not _flushing.get()
+    flushing = _flushing.set(True) if flushes else None
     try:
         yield _current.get()
     finally:
+        if flushing is not None:
+            _flushing.reset(flushing)
         _current.reset(token)
-        if flush:
+        if flushes:
             from ._client import flush as _flush
 
             _flush()

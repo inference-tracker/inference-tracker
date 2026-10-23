@@ -27,6 +27,12 @@ The server joins start and finish on provider + request id. A start without a fi
 process never saw the end of: the result went to a webhook that doesn't call webhook(), or the app
 gave up waiting.
 
+When the app stops waiting (its task is cancelled, or a timeout around the wait runs out, fal_client's
+client_timeout included), fal may still be running the request, and billing it: no finish is recorded,
+and a request submitted here stays open, so a later client.result() (or webhook()) finishes it. A call
+that never got a request id (cancelled during submit, or run()) is one "call" record with status
+"cancelled".
+
 Apps that call fal's HTTP API themselves (httpx, requests, or their own methods on a fal_client subclass)
 use track_http(client) instead: the same records, read from the requests and answers. See track_http().
 
@@ -59,7 +65,7 @@ from typing import Any
 
 from . import _client, _http
 from ._context import Context, context, current
-from ._record import Record, error_name
+from ._record import Record, cancelled, code, error_name
 
 logger = logging.getLogger("inference_tracker")
 
@@ -128,6 +134,8 @@ def webhook(body: Any, *, model: str | None = None) -> Record | None:
     inside the user's context when the user is known. Returns the finish record, or None when the body
     has no request id."""
     try:
+        if not _client.active():
+            return None
         request_id = body.get("request_id") if isinstance(body, Mapping) else None
         if not isinstance(request_id, str) or not request_id:
             return None
@@ -158,8 +166,8 @@ def _detail_code(data: Any) -> str | None:
     first = _first_detail(data)
     if first is not None:
         for key in ("error_code", "type"):
-            if isinstance(first.get(key), str) and first[key]:
-                return first[key]
+            if (found := code(first.get(key))) is not None:
+                return found
     return None
 
 
@@ -194,8 +202,8 @@ def _record_steps(result: Any, run_id: Any, *, error_type: str | None = None, **
             continue
         fallback = node.get("fallback")
         if isinstance(fallback, Mapping):  # the step's first model failed and another one did the step
-            reason = fallback.get("reason")
-            failed = reason if isinstance(reason, str) and reason else "error"
+            # The reason is kept when it is a code; fal may put a sentence there, which could quote the input.
+            failed = code(fallback.get("reason")) or "fallback"
             _record_step(fallback.get("failed_endpoint"), fallback.get("failed_request_id"), run_id, failed, fields)
         step_error = error_type if key == failed_node else None
         _record_step(node.get("endpoint"), node.get("request_id"), run_id, step_error, fields)
@@ -284,14 +292,15 @@ class _Call:
         if result is not None:
             _record_steps(result, start.request_id, user_id=start.user_id, task_id=start.task_id)
 
-    def completed(self, request_id: str | None, error_type: str | None) -> None:
-        """The whole call seen here (run(), or a submit that failed): one "call" record."""
+    def completed(self, request_id: str | None, error_type: str | None, stopped: bool = False) -> None:
+        """The whole call seen here (run(), or a submit that failed): one "call" record. `stopped`: the app
+        stopped waiting (see cancelled()), so the status is "cancelled", not "error"."""
         if self.done:
             return
         self.done = True
         r = self.record
         r.phase, r.request_id = "call", request_id
-        r.status, r.error_type = ("error" if error_type else "ok"), error_type
+        r.status, r.error_type = ("cancelled" if stopped else "error" if error_type else "ok"), error_type
         r.duration_s, r.units = self._elapsed(), self._units()
         _client.record(r)
 
@@ -318,7 +327,9 @@ class _Tracker:
         settings: Iterable[str] | None = None,
         started: tuple[float, float] | None = None,
     ) -> _Call | None:
-        """Before the call: its record."""
+        """Before the call: its record. None without an active client: nothing is done for the call."""
+        if not _client.active():
+            return None
         try:
             arguments = arguments if isinstance(arguments, Mapping) else {}
             return _Call(application, arguments, self.settings if settings is None else tuple(settings), started)
@@ -335,6 +346,15 @@ class _Tracker:
                 self._open[request_id] = call
                 while len(self._open) > MAX_OPEN:
                     self._open.popitem(last=False)
+
+    def keep(self, call: _Call | None) -> None:
+        """Remembers a call that has its request id (and start record) but no finish yet."""
+        if call is None or not call.record.request_id or call.done:
+            return
+        with self._lock:
+            self._open[call.record.request_id] = call
+            while len(self._open) > MAX_OPEN:
+                self._open.popitem(last=False)
 
     def take(self, request_id: Any) -> _Call | None:
         with self._lock:
@@ -376,7 +396,7 @@ class _Handle:
         try:
             result = self._handle.get(**kwargs)
         except BaseException as e:
-            _safe(self._tracker.finish, self._call, _error_type(e))
+            self._failed(e)
             raise
         _safe(self._tracker.finish, self._call, None, result)
         return result
@@ -388,6 +408,10 @@ class _Handle:
     def _saw(self, status: Any) -> None:
         if self._call is not None:
             _safe(self._call.saw, status)
+
+    def _failed(self, error: BaseException) -> None:
+        if not cancelled(error):  # the app stopped waiting: fal may still be running it, so no finish
+            _safe(self._tracker.finish, self._call, _error_type(error))
 
 
 class _AsyncHandle(_Handle):
@@ -405,7 +429,7 @@ class _AsyncHandle(_Handle):
         try:
             result = await self._handle.get(**kwargs)
         except BaseException as e:
-            _safe(self._tracker.finish, self._call, _error_type(e))
+            self._failed(e)
             raise
         _safe(self._tracker.finish, self._call, None, result)
         return result
@@ -458,7 +482,7 @@ class _Client:
         try:
             result = self._client.run(application, arguments, **kwargs)
         except BaseException as e:
-            self._ran(call, token, _error_type(e))
+            self._ran(call, token, e)
             raise
         self._ran(call, token, None)
         return result
@@ -468,7 +492,7 @@ class _Client:
         try:
             result = self._client.result(application, request_id)
         except BaseException as e:
-            _safe(self._tracker.finish, call, _error_type(e))
+            self._result_failed(call, e)
             raise
         _safe(self._tracker.finish, call, None, result)
         return result
@@ -496,20 +520,30 @@ class _Client:
         return on_enqueue
 
     def _failed(self, call: _Call | None, error: BaseException) -> None:
-        """subscribe() or submit() raised: a call that never got a request id is one failed "call"
-        record; one that did is finished with the error."""
+        """subscribe() or submit() raised: a call that never got a request id is one failed (or cancelled)
+        "call" record; one that did is finished with the error, or, when the app stopped waiting, left open
+        for a later result() to finish."""
         if call is None:
             return
         if call.record.request_id is None:
-            _safe(call.completed, None, _error_type(error))
+            _safe(call.completed, None, _error_type(error), cancelled(error))
+        elif cancelled(error):
+            _safe(self._tracker.keep, call)
         else:
             _safe(self._tracker.finish, call, _error_type(error))
 
-    def _ran(self, call: _Call | None, token: contextvars.Token, error_type: str | None) -> None:
+    def _result_failed(self, call: _Call | None, error: BaseException) -> None:
+        if cancelled(error):
+            _safe(self._tracker.keep, call)  # still open: the result can be fetched again
+        else:
+            _safe(self._tracker.finish, call, _error_type(error))
+
+    def _ran(self, call: _Call | None, token: contextvars.Token, error: BaseException | None) -> None:
         request_id = _seen_request_id.get()
         _seen_request_id.reset(token)
         if call is not None:
-            _safe(call.completed, request_id, error_type)
+            error_type = _error_type(error) if error is not None else None
+            _safe(call.completed, request_id, error_type, cancelled(error))
 
 
 class _AsyncClient(_Client):
@@ -553,7 +587,7 @@ class _AsyncClient(_Client):
         try:
             result = await self._client.run(application, arguments, **kwargs)
         except BaseException as e:
-            self._ran(call, token, _error_type(e))
+            self._ran(call, token, e)
             raise
         self._ran(call, token, None)
         return result
@@ -563,7 +597,7 @@ class _AsyncClient(_Client):
         try:
             result = await self._client.result(application, request_id)
         except BaseException as e:
-            _safe(self._tracker.finish, call, _error_type(e))
+            self._result_failed(call, e)
             raise
         _safe(self._tracker.finish, call, None, result)
         return result
@@ -612,7 +646,10 @@ def track_http(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     Everything else (other hosts, status streams, uploads) passes through unseen. A failed answer's error
     type is fal's code (x-fal-error-type, or the body's error_type or detail), else "http_<status>". A 5xx
     without fal's request id header came from fal's gateway, not the app, and isn't recorded (fal_client
-    retries those). A request that gets no answer at all isn't recorded either.
+    retries those). A request that gets no answer at all (a timeout, a broken connection) may still have
+    reached fal: a submit or run() without an answer is one "call" record with the exception's class name
+    as error type and no request id ("cancelled" when the app cancelled it); a status, result or cancel
+    request without one changes nothing (the request stays open).
 
     A fal_client.SyncClient, or a subclass whose own methods call fal over HTTP, can be passed as it is:
     its session is watched, so its SDK methods are recorded the same way. Use either track() or
@@ -668,6 +705,11 @@ class _HttpWatcher:
             self._result(ex, _http_calls.peek(request_id))
         elif kind == "cancel" and ex.ok:
             _http_calls.finish(_http_calls.peek(request_id), "cancelled")
+
+    def failed(self, ex: _http.Exchange) -> None:
+        kind, _, model = _route(ex)
+        if kind in ("submit", "run") and (call := self._start(ex, model)) is not None:
+            call.completed(None, _http.error_type(ex), cancelled(ex.error))
 
     def _start(self, ex: _http.Exchange, model: str) -> _Call | None:
         arguments = ex.request_json() if self.settings else None  # read only for the settings copied from it
@@ -735,14 +777,12 @@ def _from_fal(ex: _http.Exchange) -> bool:
 def _http_error_type(ex: _http.Exchange) -> str | None:
     """fal's code for a failed answer: the x-fal-error-type header, or the body's error_type or detail.
     Never the message. None when the answer has none."""
-    code = ex.headers.get(ERROR_TYPE_HEADER)
-    if isinstance(code, str) and code:
-        return code
+    found = code(ex.headers.get(ERROR_TYPE_HEADER))
+    if found is not None:
+        return found
     body = ex.body
     if isinstance(body, Mapping):
-        if isinstance(body.get("error_type"), str) and body["error_type"]:
-            return body["error_type"]
-        return _detail_code(body)
+        return code(body.get("error_type")) or _detail_code(body)
     return None
 
 
@@ -782,8 +822,7 @@ def _watch_request_ids(http: Any, is_async: bool) -> None:
 
 def _error_type(error: BaseException) -> str:
     """fal's error code when its exception carries one, else the exception's class name. Never a message."""
-    code = getattr(error, "error_type", None)
-    return code if isinstance(code, str) and code else error_name(error)
+    return code(getattr(error, "error_type", None)) or error_name(error)
 
 
 def _safe(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

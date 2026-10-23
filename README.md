@@ -14,17 +14,37 @@ Early work in progress. Python 3.10 or newer, no other packages needed.
 ```python
 import inference_tracker
 
-inference_tracker.init(url="https://.../ingest", key="...", app="myapp")  # once per process
+inference_tracker.init(url="https://.../ingest", key="...", app="myapp")
 ```
 
 Or set `INFERENCE_TRACKER_URL`, `INFERENCE_TRACKER_KEY` and `INFERENCE_TRACKER_APP` (and optionally
 `INFERENCE_TRACKER_ENVIRONMENT`, e.g. `prod`). Without url, key and app, nothing is sent and every call
-below does nothing.
+below does nothing: no answer is read, no body parsed.
+
+`init()` can be called at startup or at the start of every request, from any number of threads at
+once: called again with the same values, it returns the client already running and does nothing else.
+So there is no need for a "started" flag of your own (a flag set before `init()` returns lets a
+request that comes meanwhile run without a client).
 
 Records are sent in the background every few seconds. Some hosts freeze the process as soon as the
 response is sent (Cloud Functions, Lambda, Cloud Run by default). There, use
 `init(..., background=False)` and `context(..., flush=True)`, which sends the records when the
 block ends.
+
+That flush runs in your request, so it is kept short:
+
+- Only the outermost `context(flush=True)` block flushes; blocks inside it don't.
+- It gives up after `flush_timeout` seconds (1 by default), and never waits on a busy ingest server
+  (a 429, a Retry-After, a retry): records that didn't go stay queued and go with the next flush.
+- After a flush that didn't get everything through, flushes are skipped for `flush_pause` seconds
+  (60 by default), so a slow or down server costs one request a second, not every request.
+
+```python
+inference_tracker.init(..., background=False, flush_timeout=1.0, flush_pause=60)
+```
+
+The background thread, and `inference_tracker.shutdown()` (run when the process exits), still retry
+with growing waits.
 
 Say who the work is for where it starts. Every tracked call inside the block gets that user and task:
 
@@ -113,7 +133,9 @@ http = inference_tracker.fal.track_http(httpx.Client())  # or httpx.AsyncClient,
 ```
 
 A submit to `queue.fal.run` is a "start", fetching the result a "finish", a call to `fal.run` one
-record. Other addresses pass through untouched. Use `track()` or `track_http()` on a client, not both.
+record. A submit or `fal.run` call that gets no answer at all (a timeout, a refused connection) is
+one record with the exception's class name and no request id: fal may have run it. Other addresses
+pass through untouched. Use `track()` or `track_http()` on a client, not both.
 
 ## OpenAI and Azure (the `openai` package)
 
@@ -165,7 +187,9 @@ inference_tracker.litellm.track()  # once at startup, after any `litellm.callbac
 ```
 
 Every `litellm.completion` / `acompletion`, embedding, image and responses call is recorded, streamed or
-not, including calls the OpenAI Agents SDK's `LitellmModel` makes. Bedrock records carry the model or
+not, including calls the OpenAI Agents SDK's `LitellmModel` makes (`Runner.run`, `Runner.run_sync`). An
+async call is recorded before it returns; for a sync call, LiteLLM records it on its own thread a moment
+later, and `flush()` waits for it, so it is in the flush of the block that made it. Bedrock records carry the model or
 inference-profile id, the `x-amzn-requestid`, the region, and input, output, cache-read and cache-write
 tokens. Don't also pass a client wrapped by `inference_tracker.openai.track` to LiteLLM (`client=`), or
 the call is recorded twice.
@@ -182,6 +206,23 @@ http = inference_tracker.modal.track_http(httpx.Client(), apps=["video-app"])  #
 Inside a Modal function, `with inference_tracker.modal.inside():` makes the call the function is serving
 the parent of every tracked call in the block, like `fal.inside(self)`.
 
+## Pruna
+
+For calls to Pruna's API (`api.pruna.ai`) over plain HTTP, or with Pruna's `pruna_client`:
+
+```python
+http = inference_tracker.pruna.track_http(httpx.AsyncClient())  # or httpx.Client, requests.Session,
+                                                                # a pruna_client.PrunaClient
+```
+
+A prediction sent to `POST /v1/predictions` is a "start" with Pruna's prediction id, and the status
+answer that says it ended (`succeeded`, `failed`, `canceled`) is the "finish". With `Try-Sync`, a
+prediction answered at once is one record, without an id (Pruna gives none). A refused one is one
+record with Pruna's code (`VALIDATION_ERROR`...). The model is the `Model` header (`p-video`,
+`p-video-2-pro-reference`...). Pruna reports no usage, so the record keeps what the price depends
+on: the settings sent (duration, resolution, mode, draft, fps...) and how many reference images,
+videos and audio files went with it (counts, never the URLs). Downloads and uploads aren't recorded.
+
 ## What a record holds
 
 One record per call. A call whose result arrives somewhere else (a queued call, a webhook) gets two:
@@ -189,10 +230,21 @@ a "start" when it is sent and a "finish" when the result comes back, both with t
 request id.
 
 Each record has: provider, model, the provider's request id, status and error type (the error's
-class name or the provider's code, never its message), start time and duration, usage as the
-provider reports it, and the settings that change the price (copied by name, never the whole
-input). From the context: user, task, and the call that made this one (`parent_provider` and
-`parent_request_id`, the provider's request id).
+class name or the provider's code, never its message: a provider's text that doesn't look like a
+code is left out), start time and duration, usage as the provider reports it, and the settings that
+change the price (copied by name, never the whole input). From the context: user, task, and the call
+that made this one (`parent_provider` and `parent_request_id`, the provider's request id).
+
+## When the app stops waiting
+
+When the app cancels a call or a timeout around it runs out (`asyncio.CancelledError`,
+`asyncio.TimeoutError`, fal_client's timeout while polling), the provider may still be running the
+call, and billing it. So that isn't recorded as a failure:
+
+- A call recorded in one record (OpenAI, Google, LiteLLM, `fal.run`, Modal's `remote()`) gets status
+  `cancelled`, with the error's class name as error type.
+- A call with a "start" and a "finish" (fal's queue, Veo, Modal's `spawn()`, Pruna) gets no finish: the
+  start stays open, and a later result fetch or webhook finishes it.
 
 ## If sending fails
 

@@ -117,6 +117,7 @@ def no_open_requests():
 def sent(monkeypatch):
     out: list[Record] = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 
@@ -396,3 +397,103 @@ def test_an_async_fal_client_is_watched_through_its_session(patched, sent, caplo
 
     asyncio.run(main())
     assert [(r.phase, r.request_id, r.status) for r in sent] == [("start", "req-1", None), ("finish", "req-1", "ok")]
+
+
+# --- requests that get no answer, and no client ----------------------------------------------------------
+
+
+def failing(fal, fails):
+    """fal's fake, except that a request whose URL contains one of `fails` raises like a dead connection."""
+
+    def handler(request):
+        for part, error in fails.items():
+            if part in str(request.url):
+                raise error
+        return fal.httpx(request)
+
+    return handler
+
+
+def test_a_submit_or_run_without_an_answer_is_one_failed_call(fal, sent):
+    fails = {"queue.fal.run/fal-ai/flux/dev": httpx.ConnectTimeout("no answer"), "//fal.run/": httpx.ReadError("x")}
+    http = track_http(httpx.Client(transport=httpx.MockTransport(failing(fal, fails))))
+    with context(user_id="u1"):
+        with pytest.raises(httpx.ConnectTimeout):
+            http.post("https://queue.fal.run/fal-ai/flux/dev", json=ARGS)
+        with pytest.raises(httpx.ReadError):
+            http.post("https://fal.run/fal-ai/flux/dev", json=ARGS)
+    assert phases(sent) == [("call", "fal-ai/flux/dev", None, "error"), ("call", "fal-ai/flux/dev", None, "error")]
+    assert [r.error_type for r in sent] == ["ConnectTimeout", "ReadError"]
+    assert sent[0].settings == {"image_size": "landscape_4_3", "num_images": 2} and sent[0].user_id == "u1"
+    assert sent[0].duration_s is not None
+
+
+def test_a_result_fetch_without_an_answer_leaves_the_request_open(fal, sent):
+    fails = {"/requests/req-1": httpx.ReadTimeout("slow")}
+    http = track_http(httpx.Client(transport=httpx.MockTransport(failing(fal, fails))))
+    submitted = http.post("https://queue.fal.run/fal-ai/flux/dev", json=ARGS).json()
+    with pytest.raises(httpx.ReadTimeout):
+        http.get(submitted["response_url"])
+    assert phases(sent) == [("start", "fal-ai/flux/dev", "req-1", None)]
+    fails.clear()
+    http.get(submitted["response_url"])
+    assert phases(sent)[-1] == ("finish", "fal-ai/flux/dev", "req-1", "ok")
+
+
+def test_requests_without_an_answer_with_requests(fal, sent):
+    class Dead(Adapter):
+        def send(self, request, **kwargs):
+            raise requests.ConnectionError("refused")
+
+    s = requests.Session()
+    s.mount("https://", Dead(fal))
+    http = track_http(s)
+    with pytest.raises(requests.ConnectionError):
+        http.post("https://queue.fal.run/fal-ai/flux/dev", json=ARGS)
+    with pytest.raises(requests.ConnectionError):
+        http.get("https://api.example.com/")  # not fal: unseen
+    assert phases(sent) == [("call", "fal-ai/flux/dev", None, "error")]
+    assert sent[0].error_type == "ConnectionError"
+
+
+def test_a_cancelled_submit_or_result_wait(fal, sent):
+    hang = set()
+
+    async def handler(request):
+        if request.method in hang or request.url.path.endswith("hang"):
+            await asyncio.sleep(10)  # no answer before the app gives up
+        return fal.httpx(request)
+
+    async def main():
+        async with track_http(httpx.AsyncClient(transport=httpx.MockTransport(handler))) as http:
+            submitted = (await http.post("https://queue.fal.run/fal-ai/flux/dev", json=ARGS)).json()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(http.post("https://queue.fal.run/fal-ai/hang", json=ARGS), 0.1)
+            hang.add("GET")
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(http.get(submitted["response_url"]), 0.1)
+            assert tracked_fal._http_calls.peek("req-1") is not None  # still open: fal may still be running it
+
+    asyncio.run(main())
+    assert phases(sent) == [("start", "fal-ai/flux/dev", "req-1", None), ("call", "fal-ai/hang", None, "cancelled")]
+    assert sent[1].error_type == "CancelledError"
+
+
+def test_without_a_client_no_answer_is_read(fal, monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+
+    def never(*args):
+        raise AssertionError("looked at an answer")
+
+    monkeypatch.setattr(tracked_fal._HttpWatcher, "wants_body", never)
+    monkeypatch.setattr(tracked_fal._HttpWatcher, "seen", never)
+    monkeypatch.setattr(tracked_fal._HttpWatcher, "failed", never)
+    http = track_http(httpx.Client(transport=httpx.MockTransport(failing(fal, {"//fal.run/": httpx.ReadError("x")}))))
+    assert queue_flow(http) == RESULT
+    with pytest.raises(httpx.ReadError):
+        http.post("https://fal.run/fal-ai/flux/dev", json=ARGS)
+    s = track_http(session(fal))
+    assert queue_flow(s) == RESULT
+    assert out == []

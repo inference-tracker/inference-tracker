@@ -25,6 +25,9 @@ Tracked:
 - models.generate_videos (Veo) runs as a long-running operation: a "start" record when it is sent (its
   request id is the operation's name), and a "finish" record when operations.get() returns it done, with
   the seconds of video made (the requested length times the videos returned).
+When the app stops waiting (its task is cancelled, or a timeout around the call runs out), a "call" record gets
+status "cancelled", not "error": Google may still have run the call. A Veo operation the app stopped polling is
+left open (no finish): a later operations.get() that returns it done finishes it.
 Everything else, streamed calls included, passes through unchanged. The call itself is never changed, and
 tracking never raises: a problem in it is logged and the call goes on.
 
@@ -45,7 +48,7 @@ from typing import Any
 
 from . import _client
 from ._proxy import Path, Proxy, get, number, put
-from ._record import Record, error_name
+from ._record import Record, cancelled, code, error_name
 
 logger = logging.getLogger("inference_tracker")
 
@@ -83,7 +86,7 @@ def track(client: Any) -> Any:
     lock = threading.Lock()
 
     def before(path: Path, kwargs: dict[str, Any]) -> tuple[Record, float] | None:
-        if path[-1] == "get":
+        if path[-1] == "get" or not _client.active():
             return None
         try:
             config = kwargs.get("config")
@@ -114,6 +117,8 @@ def track(client: Any) -> Any:
         error: BaseException | None,
     ) -> None:
         try:
+            if not _client.active():
+                return
             if path[-1] == "get":
                 _polled(args, kwargs, result, error)
             elif path[-1] == "generate_videos":
@@ -185,8 +190,7 @@ def track(client: Any) -> Any:
                 units["video_seconds"] = seconds * len(videos)
         error_type = None
         if failure:
-            code = get(failure, "code")
-            error_type = str(code) if code is not None else "operation_error"
+            error_type = code(get(failure, "code")) or "operation_error"
         elif isinstance(videos, list) and not videos:
             filtered = get(operation, "response", "rai_media_filtered_count")
             error_type = "filtered" if filtered else "no_video"
@@ -241,9 +245,8 @@ def _outcome(record: Record, error: BaseException | None) -> None:
     if error is None:
         record.status = "ok"
         return
-    record.status = "error"
-    status = getattr(error, "status", None)
-    record.error_type = status if isinstance(status, str) and status else error_name(error)
+    record.status = "cancelled" if cancelled(error) else "error"
+    record.error_type = code(getattr(error, "status", None)) or error_name(error)
 
 
 def _units(response: Any) -> dict[str, float]:
@@ -327,6 +330,8 @@ def _track_embedding_model(model: Any) -> Any:
     name = getattr(model, "_model_id", None) or endpoint.rsplit("/", 1)[-1] or None
 
     def start() -> tuple[Record, float] | None:
+        if not _client.active():
+            return None
         try:
             return Record.new(VERTEX, name, started_at=time.time(), settings=dict(place)), time.monotonic()
         except Exception:

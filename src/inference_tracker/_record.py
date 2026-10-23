@@ -17,8 +17,10 @@ On the wire, fields that OpenTelemetry's GenAI conventions name use those names.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -27,7 +29,13 @@ from typing import Any, Literal
 from ._context import current as _current_context
 
 Phase = Literal["call", "start", "finish"]
-Status = Literal["ok", "error"]
+# "cancelled": the app stopped waiting (cancelled, or timed out waiting) before the answer came, on a call
+# recorded as one "call" record. The provider may still have run it, and billed it.
+Status = Literal["ok", "error", "cancelled"]
+
+# What an error type or a provider's code looks like. Anything else (a sentence, a message that could quote
+# the input) is not copied onto a record.
+_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 @dataclass
@@ -77,7 +85,7 @@ class Record:
             "gen_ai.request.model": self.model,
             "gen_ai.response.id": self.request_id,
             "status": self.status,
-            "error.type": self.error_type,
+            "error.type": _error_type(self.error_type),
             "started_at": self.started_at,
             "duration_s": self.duration_s,
             "units": _numbers(self.units),
@@ -112,6 +120,28 @@ def _settings(settings: dict) -> dict[str, Any]:
     return out
 
 
+def _error_type(value: str | None) -> str | None:
+    """A last check that error_type is a code, whatever a wrapper put there."""
+    if value is None:
+        return None
+    return code(value) or "error"
+
+
 def error_name(error: BaseException) -> str:
     """What goes in error_type for an exception: its class name. The message can quote the input."""
     return type(error).__name__
+
+
+def code(value: object) -> str | None:
+    """`value` when it looks like a code ("content_policy_violation", "INVALID_ARGUMENT", "429"), else None:
+    a provider's free text (a reason, a message) can quote the input, so it never goes on a record."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    return value if isinstance(value, str) and _CODE.match(value) else None
+
+
+def cancelled(error: BaseException | None) -> bool:
+    """Whether an error only says the app stopped waiting: the task was cancelled, or a timeout around the wait
+    ran out (asyncio's, or a client's that is a TimeoutError, like fal_client's). The provider may still be
+    running the call, and billing it, so this isn't the call failing."""
+    return isinstance(error, (asyncio.CancelledError, TimeoutError, asyncio.TimeoutError))

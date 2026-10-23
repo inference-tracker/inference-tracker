@@ -14,6 +14,7 @@ from inference_tracker.openai import track
 def records(monkeypatch):
     out = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 
@@ -287,3 +288,42 @@ def test_with_the_real_openai_package(records):
     assert (ok.status, ok.units["input_tokens"]) == ("ok", 700)
     assert (failed.status, failed.error_type, failed.request_id) == ("error", "ValidationError", "resp_3")
     assert failed.units == {"input_tokens": 700, "output_tokens": 20, "cached_input_tokens": 512, "reasoning_tokens": 0}
+
+
+def test_a_call_the_app_stops_waiting_for_is_cancelled(records):
+    class Slow:
+        async def create(self, **kwargs):
+            await asyncio.sleep(60)
+
+    client = AsyncClient()
+    client.chat = NS(completions=Slow())
+
+    async def main():
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(track(client).chat.completions.create(model="gpt-5.4-nano", messages=[]), 0.1)
+
+    asyncio.run(main())
+    (r,) = records
+    assert (r.phase, r.status, r.error_type, r.model) == ("call", "cancelled", "CancelledError", "gpt-5.4-nano")
+
+
+def test_an_error_code_that_is_text_is_not_kept(records):
+    class Refused(Exception):
+        code = "The prompt mentions my kid"
+
+    def refuse(**kwargs):
+        raise Refused()
+
+    client = Client()
+    client.chat = NS(completions=NS(create=refuse))
+    with pytest.raises(Refused):
+        track(client).chat.completions.create(model="gpt-5.4-nano", messages=[])
+    assert records[0].error_type == "Refused"
+
+
+def test_without_a_client_nothing_is_done(monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    assert track(Client()).responses.parse(model="gpt-5.4-mini", input="x") is RESPONSE
+    assert out == []

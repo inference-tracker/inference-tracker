@@ -27,6 +27,7 @@ class FakeModal:
 
     def __init__(self):
         self.error = None
+        self.slow = False  # calls and results take a minute: for the app giving up on the wait
         self.pending = 0
         self.calls = []  # the arguments each call got
         self.cancelled = []
@@ -42,6 +43,8 @@ def fake(monkeypatch):
 
     async def call_function(self, args, kwargs):
         fake.calls.append(args)
+        if fake.slow:
+            await asyncio.sleep(60)
         if fake.error:
             raise fake.error
         return {"video": "https://cdn/x.mp4"}
@@ -56,6 +59,8 @@ def fake(monkeypatch):
         return SimpleNamespace(function_call_id=f"fc-{len(fake.calls)}", client=client)
 
     async def poll_function(timeout=None, index=0):
+        if fake.slow:
+            await asyncio.sleep(60)
         if fake.pending:
             fake.pending -= 1
             raise TimeoutError()  # what modal raises when get(timeout=...) finds no result yet
@@ -74,6 +79,7 @@ def fake(monkeypatch):
 def sent(monkeypatch):
     out: list[Record] = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 
@@ -287,3 +293,51 @@ def test_async_httpx_and_requests(sent):
     tracked_modal.track_http(session, apps=["video-app"]).post("https://acme--video-app-generate.modal.run/", json=ARGS)
     assert [r.request_id for r in sent] == ["fc-web", "fc-req"]
     assert all(r.duration_s is not None for r in sent)
+
+
+def test_a_remote_call_the_app_stops_waiting_for_is_cancelled(fake, sent):
+    fake.slow = True
+    generate = tracked_modal.function("video-app", "generate")
+
+    async def main():
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(generate.remote.aio(ARGS), 0.1)
+
+    asyncio.run(main())
+    assert [(r.phase, r.status, r.error_type) for r in sent] == [("call", "cancelled", "CancelledError")]
+
+
+def test_a_get_the_app_stops_waiting_for_is_no_finish(fake, sent):
+    generate = tracked_modal.function("video-app", "generate")
+
+    async def main():
+        call = await generate.spawn.aio(ARGS)
+        fake.slow = True
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(call.get.aio(), 0.1)
+
+    asyncio.run(main())
+    assert phases(sent) == [("start", "video-app/generate", "fc-1", None)]  # still running on Modal
+
+
+def test_a_web_request_without_an_answer_is_one_failed_call(sent):
+    def dead(request):
+        raise httpx.ReadTimeout("no answer")
+
+    http = tracked_modal.track_http(httpx.Client(transport=httpx.MockTransport(dead)), apps=["video-app"])
+    with context(user_id="u1"), pytest.raises(httpx.ReadTimeout):
+        http.post("https://acme--video-app-generate.modal.run/", json=ARGS)
+    assert phases(sent) == [("call", "video-app/generate", None, "error")]
+    assert (sent[0].error_type, sent[0].user_id) == ("ReadTimeout", "u1")
+
+
+def test_without_a_client_nothing_is_done(fake, monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    generate = tracked_modal.function("video-app", "generate")
+    generate.remote(ARGS)
+    generate.spawn(ARGS).get()
+    http = tracked_modal.track_http(httpx.Client(transport=httpx.MockTransport(web_endpoint)), apps=["video-app"])
+    http.post("https://acme--video-app-generate.modal.run/", json=ARGS)
+    assert out == []

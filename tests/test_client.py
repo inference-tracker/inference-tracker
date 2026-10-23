@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 
 import pytest
@@ -52,28 +53,77 @@ def test_sends_in_batches_with_who_sent_them():
     assert c.pending() == 0
 
 
-def test_busy_server_is_retried_until_it_answers():
+def test_shutdown_retries_a_busy_server_until_it_answers():
     server = FakeServer(Result("retry", 503), Result("retry"))
     c = client(server)
     c.record(call())
-    assert c.flush() is True
+    c.shutdown()
     assert len(server.bodies) == 3
     assert server.bodies[0]["records"] == server.bodies[2]["records"]  # same batch, same ids
+    assert c.pending() == 0
 
 
-def test_retry_after_is_respected():
+def test_shutdown_respects_retry_after():
     server = FakeServer(Result("retry", 429, retry_after=0.2))
     c = client(server)
     c.record(call())
     started = time.monotonic()
-    assert c.flush() is True
+    c.shutdown()
     assert time.monotonic() - started >= 0.2
+    assert c.pending() == 0
+
+
+def test_flush_never_waits_on_a_busy_server_and_keeps_the_records():
+    server = FakeServer(Result("retry", 429, retry_after=30), Result("retry", 503))
+    c = client(server, flush_pause=0)
+    c.record(call(1))
+    started = time.monotonic()
+    assert c.flush() is False  # one try, no sleeping on Retry-After or backoff
+    assert c.flush() is False
+    assert time.monotonic() - started < 0.5
+    assert len(server.bodies) == 2
+    assert c.pending() == 1  # still queued, for the next flush
+    assert c.flush() is True
+    assert [r["gen_ai.response.id"] for r in server.records()][-1] == "req-1"
+
+
+def test_after_a_failed_flush_flushes_are_skipped_for_a_while():
+    server = FakeServer(Result("retry"))
+    c = client(server, flush_pause=0.2)
+    c.record(call(1))
+    assert c.flush() is False
+    c.record(call(2))
+    assert c.flush() is False  # skipped: no try at all
+    assert len(server.bodies) == 1
+    assert c.pending() == 2
+    time.sleep(0.25)
+    assert c.flush() is True  # the pause is over: everything waiting goes, in one batch
+    assert [r["gen_ai.response.id"] for r in server.bodies[-1]["records"]] == ["req-1", "req-2"]
+
+
+def test_flush_is_short_by_default_and_configurable(no_global_client):
+    timeouts = []
+
+    def slow(url, key, body, timeout):
+        timeouts.append(timeout)
+        time.sleep(timeout)
+        return Result("retry")  # no answer in time
+
+    c = client(slow)
+    assert c.flush_timeout == 1.0
+    inference_tracker.init("https://ingest.test", "key", "myapp", background=False, post=slow, flush_timeout=0.2)
+    inference_tracker.record(call())
+    started = time.monotonic()
+    assert inference_tracker.flush() is False
+    assert time.monotonic() - started < 0.5
+    assert 0 < timeouts[-1] <= 0.2
+    assert inference_tracker._client._client.pending() == 1
 
 
 def test_when_time_runs_out_records_are_kept_and_logged_once(caplog):
     caplog.set_level(logging.WARNING, logger="inference_tracker")
     server = FakeServer(*[Result("retry")] * 1000)
-    c = client(server, first_retry_delay=0.05)
+    c = client(server, first_retry_delay=0.05, flush_pause=0)
     c.record(call(1))
     c.record(call(2))
     assert c.flush(timeout=0.2) is False
@@ -158,8 +208,11 @@ def test_shutdown_sends_what_is_left():
 
 @pytest.fixture
 def no_global_client():
+    inference_tracker._client._client = None
+    inference_tracker._client._settings = inference_tracker._client._NOT_YET
     yield
     inference_tracker._client._client = None
+    inference_tracker._client._settings = inference_tracker._client._NOT_YET
 
 
 def test_without_init_everything_is_a_no_op(no_global_client, monkeypatch):
@@ -177,6 +230,54 @@ def test_context_with_flush_sends_when_the_block_ends(no_global_client):
         inference_tracker.record(call())
         assert server.bodies == []
     assert server.records()[0]["user_id"] == "u1"
+
+
+def test_only_the_outermost_flushing_block_flushes(no_global_client, monkeypatch):
+    flushes = []
+    monkeypatch.setattr(inference_tracker._client, "flush", lambda: flushes.append(1))
+    with inference_tracker.context(user_id="u1", flush=True):
+        with inference_tracker.context(task_id="t1", flush=True):
+            with inference_tracker.context(task_id="t2", flush=True):
+                pass
+            assert flushes == []
+        assert flushes == []
+    assert flushes == [1]
+    with inference_tracker.context(task_id="t3", flush=True):
+        pass
+    assert flushes == [1, 1]  # a new outer block flushes again
+
+
+def test_init_is_cheap_to_repeat_and_safe_from_many_threads(no_global_client):
+    server = FakeServer()
+    got = []
+
+    def start():
+        got.append(inference_tracker.init("https://ingest.test", "key", "myapp", background=False, post=server))
+
+    threads = [threading.Thread(target=start) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(got) == 20 and got[0] is not None
+    assert all(c is got[0] for c in got)  # one client, made once
+    inference_tracker.record(call(1))
+    assert inference_tracker.init("https://ingest.test", "key", "myapp", background=False, post=server) is got[0]
+    assert got[0].pending() == 1  # calling init again didn't restart it, nor drop what it holds
+
+    other = inference_tracker.init("https://ingest.test", "key", "otherapp", background=False, post=server)
+    assert other is not got[0]  # other values: a new client, the old one sent what it had
+    assert server.records()[0]["gen_ai.response.id"] == "req-1"
+
+
+def test_init_without_values_warns_once(no_global_client, monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="inference_tracker")
+    for name in ("INFERENCE_TRACKER_URL", "INFERENCE_TRACKER_KEY", "INFERENCE_TRACKER_APP"):
+        monkeypatch.delenv(name, raising=False)
+    for _ in range(3):
+        assert inference_tracker.init() is None
+    assert len([r for r in caplog.records if "won't be sent" in r.getMessage()]) == 1
+    assert inference_tracker._client.active() is False
 
 
 def _wait_for(condition, seconds=2.0):

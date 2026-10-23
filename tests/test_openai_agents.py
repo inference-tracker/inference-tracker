@@ -45,6 +45,7 @@ def no_tracing():
 def records(monkeypatch):
     out = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 

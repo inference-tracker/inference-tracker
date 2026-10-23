@@ -19,6 +19,9 @@ OpenAI Agents SDK streams. A copy of the client (with_options, copy) is tracked 
 Everything else passes through unchanged. The call itself is never changed, and tracking never raises: a
 problem in it is logged and the call goes on.
 
+When the app stops waiting (its task is cancelled, or a timeout around the call runs out), the call is recorded
+with status "cancelled" (error_type the exception's class name): the provider may still have answered, and billed.
+
 Streamed calls (stream=True) are recorded when the stream ends, with the usage its last chunk or event
 reports. A Responses stream always reports it. A chat completions stream reports it only when the app
 asked for stream_options={"include_usage": True}; it isn't added here, because it adds a chunk the app
@@ -53,7 +56,7 @@ from urllib.parse import urlparse
 
 from . import _client
 from ._proxy import Path, Proxy, get, number, put
-from ._record import Record, error_name
+from ._record import Record, cancelled, code, error_name
 
 logger = logging.getLogger("inference_tracker")
 
@@ -350,9 +353,9 @@ class _Stream:
             if kind.startswith("image_") and kind.endswith(".completed"):
                 self.images += 1
             elif kind == "response.failed":
-                self.error_type = get(response, "error", "code") or "failed"
+                self.error_type = code(get(response, "error", "code")) or "failed"
             elif kind == "error":
-                self.error_type = get(item, "code") or "error"
+                self.error_type = code(get(item, "code")) or "error"
             if kind in ("response.completed", "response.incomplete", "response.failed", "error"):
                 self.finish(None)
         except Exception:
@@ -468,6 +471,8 @@ def _vertex_model(model: Any) -> Any:
 
 
 def _start(where: _Where, kwargs: dict[str, Any]) -> _Call | None:
+    if not _client.active():
+        return None  # nothing is recorded: nothing is looked at
     try:
         settings = {k: kwargs[k] for k in SETTINGS if _given(kwargs.get(k))}
         effort = get(kwargs.get("reasoning"), "effort") or kwargs.get("reasoning_effort")
@@ -525,9 +530,8 @@ def _end(
         # An error can still come with an answer (a parse call whose answer didn't fit the format): the
         # provider billed it, so its id, model and usage go on the record too.
         if error is not None:
-            record.status = "error"
-            code = getattr(error, "code", None)
-            record.error_type = code if isinstance(code, str) and code else error_name(error)
+            record.status = "cancelled" if cancelled(error) else "error"
+            record.error_type = code(getattr(error, "code", None)) or error_name(error)
             record.request_id = getattr(error, "request_id", None) or get(response, "id") or None
         else:
             record.status = "error" if error_type else "ok"

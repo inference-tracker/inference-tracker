@@ -177,6 +177,7 @@ class AsyncFalClient(FalClient):
 def sent(monkeypatch):
     out: list[Record] = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     return out
 
 
@@ -651,3 +652,103 @@ def test_async_failed_get_is_a_finish_with_the_error(sent):
     asyncio.run(main())
     assert phases(sent) == [("start", "req-1", None), ("finish", "req-1", "error")]
     assert sent[1].error_type == "content_policy_violation"
+
+
+# --- the app stops waiting ----------------------------------------------------------------------
+
+
+def test_a_cancelled_get_leaves_the_call_open_for_a_later_result(sent):
+    async def main():
+        fal = AsyncFalClient(error=asyncio.CancelledError())
+        client = track(fal)
+        handle = await client.submit("fal-ai/flux/dev", arguments=ARGS)
+        with pytest.raises(asyncio.CancelledError):
+            await handle.get()
+        assert phases(sent) == [("start", "req-1", None)]  # no finish: fal may still be running it
+        fal.handles["req-1"].error = None
+        await client.result("fal-ai/flux/dev", "req-1")
+
+    asyncio.run(main())
+    assert phases(sent) == [("start", "req-1", None), ("finish", "req-1", "ok")]
+
+
+def test_a_client_timeout_after_enqueue_leaves_the_start_open(sent):
+    class FalClientError(Exception):
+        pass
+
+    class FalClientTimeoutError(FalClientError, TimeoutError):  # fal_client's, for subscribe(client_timeout=...)
+        pass
+
+    fal = FalClient(error=FalClientTimeoutError())
+    client = track(fal)
+    with pytest.raises(TimeoutError):
+        client.subscribe("fal-ai/flux/dev", arguments=ARGS)
+    assert phases(sent) == [("start", "req-1", None)]
+    fal.handles["req-1"].error = None
+    client.result("fal-ai/flux/dev", "req-1")  # fetched again later: the finish
+    assert phases(sent)[-1] == ("finish", "req-1", "ok")
+
+
+def test_a_cancelled_result_stays_open(sent):
+    fal = FalClient()
+    client = track(fal)
+    handle = client.submit("fal-ai/flux/dev", arguments=ARGS)
+    fal.handles[handle.request_id].error = TimeoutError()
+    with pytest.raises(TimeoutError):
+        client.result("fal-ai/flux/dev", handle.request_id)
+    fal.handles[handle.request_id].error = None
+    client.result("fal-ai/flux/dev", handle.request_id)
+    assert phases(sent) == [("start", "req-1", None), ("finish", "req-1", "ok")]
+
+
+def test_a_cancelled_run_or_submit_is_one_cancelled_call(sent):
+    async def main():
+        client = track(AsyncFalClient(error=asyncio.CancelledError()))
+        with pytest.raises(asyncio.CancelledError):
+            await client.run("fal-ai/flux/dev", arguments=ARGS)
+        client = track(AsyncFalClient(submit_error=asyncio.CancelledError()))
+        with pytest.raises(asyncio.CancelledError):
+            await client.submit("fal-ai/flux/dev", arguments=ARGS)
+
+    asyncio.run(main())
+    assert phases(sent) == [("call", "run-1", "cancelled"), ("call", None, "cancelled")]
+    assert [r.error_type for r in sent] == ["CancelledError", "CancelledError"]
+
+
+# --- no free text, no work without a client -------------------------------------------------------
+
+
+def test_a_fallback_reason_is_kept_only_when_it_is_a_code(sent):
+    body = fixture("fal_workflow_webhook_ok.json")
+    body["payload"]["nodes"]["node-v-zFBFeDx7"] = {
+        "endpoint": "bytedance/seedance/v1/lite/image-to-video",
+        "request_id": "b2",
+        "fallback": {
+            "reason": "The model refused: a photo of my kid",
+            "failed_endpoint": "minimax/hailuo-02/standard/image-to-video",
+            "failed_request_id": "c3",
+        },
+    }
+    webhook(body)
+    assert steps(sent)[2] == ("minimax/hailuo-02/standard/image-to-video", "c3", "error", "fallback")
+    assert "kid" not in json.dumps([r.to_wire() for r in sent])
+
+
+def test_an_error_code_that_is_text_is_not_kept(sent):
+    client = track(FalClient(error=FalError("Your prompt mentions my kid, refused")))
+    handle = client.submit("fal-ai/flux/dev", arguments=ARGS)
+    with pytest.raises(FalError):
+        handle.get()
+    assert sent[-1].error_type == "FalError"  # the class name instead
+
+
+def test_without_a_client_nothing_is_done(monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    client = track(FalClient())
+    handle = client.submit("fal-ai/flux/dev", arguments=ARGS)
+    assert handle.get() == {"images": [{"url": "u"}]}
+    assert client.run("fal-ai/flux/dev", arguments=ARGS) == {"images": [{"url": "u"}]}
+    assert webhook(fixture("fal_workflow_webhook_ok.json")) is None
+    assert out == []

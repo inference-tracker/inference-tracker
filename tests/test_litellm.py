@@ -82,10 +82,17 @@ class FakeProviders:
 
     def __init__(self):
         self.refuse = False
+        self.hang = False  # never answer (an async request only): for the app giving up on the wait
         self.requests = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if self.hang:
+
+            async def never():
+                await asyncio.sleep(60)
+
+            return never()
         if request.url.host == "api.openai.com":
             return httpx.Response(200, json=OPENAI_CHAT, headers={"x-request-id": "req-oa"})
         if self.refuse:
@@ -124,6 +131,7 @@ def fake(monkeypatch):
 def records(monkeypatch):
     out = []
     monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
     tracker.track()
     return out
 
@@ -301,3 +309,98 @@ def test_openai_agents_litellm_model_run(fake, records):
     assert (r.provider, r.model, r.request_id, r.status) == ("aws.bedrock", PROFILE, "rid-1", "ok")
     assert r.units["input_tokens"] == 1300
     assert (r.user_id, r.task_id) == ("u7", "t7")
+
+
+@pytest.fixture
+def ingest(monkeypatch):
+    """A real client (no background thread) that sends to a fake ingest: what a flush sends is what it gets."""
+    from inference_tracker._transport import Result
+
+    bodies = []
+
+    def post(url, key, body, timeout):
+        bodies.append(json.loads(json.dumps(body)))
+        return Result("sent", 200)
+
+    inference_tracker._client._client = None
+    inference_tracker._client._settings = inference_tracker._client._NOT_YET
+    inference_tracker.init("https://ingest.test", "key", "myapp", background=False, post=post)
+    tracker.track()
+    yield lambda: [r for b in bodies for r in b["records"]]
+    inference_tracker._client._client = None
+    inference_tracker._client._settings = inference_tracker._client._NOT_YET
+
+
+def test_a_sync_call_is_in_the_flush_right_after_it(fake, ingest, monkeypatch):
+    # LiteLLM records a sync call on its logging thread after the call returned; made slow here, flush waits for it.
+    after = tracker._after
+
+    def late(*args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            time.sleep(0.3)
+        after(*args, **kwargs)
+
+    monkeypatch.setattr(tracker, "_after", late)
+    with context(user_id="u9", flush=True):
+        litellm.completion(model=MODEL, messages=MESSAGES)
+    (r,) = ingest()  # in that flush, not a later one
+    assert (r["gen_ai.response.id"], r["user_id"], r["status"]) == ("rid-1", "u9", "ok")
+
+
+def test_an_async_call_is_recorded_before_it_returns(fake, ingest, monkeypatch):
+    # As with the Agents SDK's Runner.run_sync: the loop may end, or the process freeze, right after.
+    seen = []
+
+    async def main():
+        with context(user_id="u10", flush=True):
+            await litellm.acompletion(model=MODEL, messages=MESSAGES)
+        seen.extend(ingest())
+        await asyncio.sleep(0.3)  # LiteLLM's own success callback for it comes now, and adds nothing
+
+    asyncio.run(main())
+    (r,) = seen
+    assert (r["gen_ai.response.id"], r["user_id"], r["status"]) == ("rid-1", "u10", "ok")
+    assert r["units"]["input_tokens"] == 1300
+    inference_tracker.flush()
+    assert len(ingest()) == 1
+
+
+def test_an_async_call_the_app_stops_waiting_for_is_cancelled(fake, records):
+    fake.hang = True
+
+    async def main():
+        with context(user_id="u11"):
+            task = asyncio.create_task(litellm.acompletion(model=MODEL, messages=MESSAGES))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+    (r,) = records
+    assert (r.provider, r.model, r.status, r.error_type) == ("aws.bedrock", PROFILE, "cancelled", "CancelledError")
+    assert (r.user_id, r.request_id) == ("u11", None)
+
+
+def test_a_timeout_around_an_async_call_is_cancelled_too(fake, records):
+    fake.hang = True
+
+    async def main():
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(litellm.acompletion(model=MODEL, messages=MESSAGES), 0.3)
+
+    asyncio.run(main())
+    (r,) = records
+    assert (r.status, r.error_type) == ("cancelled", "CancelledError")
+
+
+def test_nothing_is_done_without_a_client(fake, monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    tracker.track()
+    tracker._open.clear()
+    litellm.completion(model=MODEL, messages=MESSAGES)
+    time.sleep(0.3)
+    assert out == [] and not tracker._open

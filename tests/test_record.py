@@ -67,3 +67,28 @@ def test_error_type_is_the_class_name_not_the_message():
         raise TimeoutError("timed out for prompt: a photo of my kid")
     except TimeoutError as e:
         assert error_name(e) == "TimeoutError"
+
+
+def test_error_type_on_the_wire_is_always_a_code():
+    r = Record.new("fal", "fal-ai/flux/dev", status="error", error_type="The model refused: a photo of my kid")
+    assert r.to_wire()["error.type"] == "error"
+    r.error_type = "content_policy_violation"
+    assert r.to_wire()["error.type"] == "content_policy_violation"
+
+
+def test_what_counts_as_a_code_and_as_stopping_waiting():
+    import asyncio
+
+    from inference_tracker._record import cancelled, code
+
+    assert [code(v) for v in ("INVALID_ARGUMENT", "rate_limit.exceeded", 429, "two words", "", None, "x" * 65)] == [
+        "INVALID_ARGUMENT",
+        "rate_limit.exceeded",
+        "429",
+        None,
+        None,
+        None,
+        None,
+    ]
+    assert cancelled(asyncio.CancelledError()) and cancelled(TimeoutError()) and cancelled(asyncio.TimeoutError())
+    assert not cancelled(ValueError()) and not cancelled(None)

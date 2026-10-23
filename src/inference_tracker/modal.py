@@ -22,12 +22,17 @@ What is recorded:
   doesn't hand it back. When the id matters (the function makes tracked calls of its own, which name it
   as their parent), use spawn() and get(), which give it.
 - spawn() / spawn.aio(): a "start" record with the FunctionCall's id. get() / get.aio() on what it returns
-  is the "finish" (a get(timeout=...) that times out while the call still runs isn't); cancel() finishes
-  it as "cancelled". A FunctionCall fetched again by id (FunctionCall.from_id) in another process isn't
+  is the "finish" (a get(timeout=...) that times out while the call still runs isn't, nor a get the app
+  cancels or stops waiting for: the call goes on running on Modal); cancel() finishes it as "cancelled".
+  A FunctionCall fetched again by id (FunctionCall.from_id) in another process isn't
   tracked: the start has no finish then.
 - HTTP to a web endpoint (track_http): one "call" record per answer, with the id from Modal's
   modal-function-call-id header. Long requests that Modal redirects (303) until the result is ready are
-  one record, from the first request to the final answer.
+  one record, from the first request to the final answer. A request that gets no answer (a timeout, a
+  broken connection) is one record too, with the exception's class name and no id: it may have run.
+
+remote() or a web request the app stops waiting for (cancelled, or a timeout around it) is recorded with
+status "cancelled", not "error".
 
 map(), starmap(), for_each(), spawn_map() and remote_gen() pass through untracked.
 
@@ -48,7 +53,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import _client, _http
 from ._context import Context, context, current
-from ._record import Record, error_name
+from ._record import Record, cancelled, error_name
 
 logger = logging.getLogger("inference_tracker")
 
@@ -146,14 +151,14 @@ class _Call:
             )
         )
 
-    def completed(self, request_id: str | None, error_type: str | None) -> None:
-        """The whole call seen here: one "call" record."""
+    def completed(self, request_id: str | None, error_type: str | None, stopped: bool = False) -> None:
+        """The whole call seen here: one "call" record. `stopped`: the app stopped waiting, so "cancelled"."""
         if self.done:
             return
         self.done = True
         r = self.record
         r.phase, r.request_id = "call", request_id
-        r.status, r.error_type = ("error" if error_type else "ok"), error_type
+        r.status, r.error_type = ("cancelled" if stopped else "error" if error_type else "ok"), error_type
         r.duration_s = self._elapsed()
         _client.record(r)
 
@@ -162,6 +167,8 @@ class _Call:
 
 
 def _start(model: str, settings: dict[str, Any]) -> _Call | None:
+    if not _client.active():
+        return None
     try:
         return _Call(model, settings)
     except Exception:
@@ -225,7 +232,7 @@ class _Function:
     def remote(self) -> _Method:
         def after(call: _Call | None, result: Any, error: BaseException | None) -> Any:
             if call is not None:
-                call.completed(None, None if error is None else error_name(error))
+                call.completed(None, None if error is None else error_name(error), cancelled(error))
             return result
 
         return _Method(self._function.remote, lambda: _start(self._model, self._settings), after)
@@ -235,8 +242,8 @@ class _Function:
         def after(call: _Call | None, function_call: Any, error: BaseException | None) -> Any:
             if call is None:
                 return function_call
-            if error is not None:  # never got a function call id: one failed "call" record
-                call.completed(None, error_name(error))
+            if error is not None:  # never got a function call id: one failed (or cancelled) "call" record
+                call.completed(None, error_name(error), cancelled(error))
                 return None
             call.spawned(getattr(function_call, "object_id", None))
             return _FunctionCall(function_call, call)
@@ -265,7 +272,9 @@ class _FunctionCall:
     @property
     def get(self) -> _Method:
         def after(_: Any, result: Any, error: BaseException | None) -> Any:
-            if type(error) is TimeoutError:  # modal's "no result yet" for get(timeout=...): still running
+            # modal's "no result yet" for get(timeout=...) (a TimeoutError), or the app cancelling the wait:
+            # the call is still running on Modal, so it isn't finished.
+            if cancelled(error):
                 return result
             self._call.finish(None if error is None else error_name(error))
             return result
@@ -319,6 +328,13 @@ class _HttpWatcher:
 
     def wants_body(self, ex: _http.Exchange) -> bool:
         return False
+
+    def failed(self, ex: _http.Exchange) -> None:
+        call_id = _param(ex.query)  # a redirected request's call id, in its URL
+        with _redirected_lock:
+            started = _redirected.pop(call_id, None) if call_id else None
+        call = _Call(self.model(ex.host), {}, started or (ex.started_at, ex.clock))
+        call.completed(call_id, _http.error_type(ex), cancelled(ex.error))
 
     def seen(self, ex: _http.Exchange) -> None:
         call_id = ex.headers.get(CALL_ID_HEADER) or _param(ex.query)

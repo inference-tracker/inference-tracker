@@ -10,10 +10,18 @@ alone: nothing is read, timed or kept.
 The body of an answer is read only when the watcher asks for it (wants_body), the way httpx and requests let
 a hook read it: what the app reads afterwards is the same bytes. An error while reading is the call's own
 (the connection broke) and reaches the app as it would have; an error in the watcher is logged, never raised.
+
+A request that gets no answer at all (a timeout, a refused connection, the app cancelling it) raises in the
+session's send(), which no hook sees: send() is wrapped on the session object itself, so the watcher's
+failed() hears of it, and the error is raised as it was.
+
+Without an active client (init() not called, or without a key) the hooks return at once: nothing is read.
 """
 
 from __future__ import annotations
 
+import contextvars
+import inspect
 import json
 import logging
 import threading
@@ -23,24 +31,37 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from . import _client
+from ._record import error_name
+
 logger = logging.getLogger("inference_tracker")
 
 
 class Exchange:
-    """One request and the answer to it, as a hook sees them."""
+    """One request and the answer to it, as a hook sees them. For a request that got no answer (see failed()),
+    `response` is None: status 0, no headers, and `error` the exception."""
 
-    def __init__(self, request: Any, response: Any, url: str, started: tuple[float, float], elapsed: float):
+    def __init__(
+        self,
+        request: Any,
+        response: Any,
+        url: str,
+        started: tuple[float, float],
+        elapsed: float,
+        error: BaseException | None = None,
+    ):
         parts = urlsplit(url)
         self.method = str(request.method).upper()
         self.host = (parts.hostname or "").lower()
         self.path = parts.path
         self.query = parse_qs(parts.query)
         self.request_headers: Mapping[str, str] = request.headers  # case-insensitive in httpx and requests
-        self.status: int = response.status_code
-        self.headers: Mapping[str, str] = response.headers
+        self.status: int = response.status_code if response is not None else 0
+        self.headers: Mapping[str, str] = response.headers if response is not None else {}
         self.started_at, self.clock = started  # unix seconds and time.monotonic() when the request was sent
-        self.duration_s = round(elapsed, 3)  # until the answer's headers came
+        self.duration_s = round(elapsed, 3)  # until the answer's headers came (or the error)
         self.body: Any = None  # the answer's JSON, when the watcher asked for it
+        self.error = error  # why there is no answer
         self._request = request
 
     @property
@@ -67,17 +88,93 @@ class Watcher(Protocol):
 
     def seen(self, exchange: Exchange) -> None: ...
 
+    def failed(self, exchange: Exchange) -> None: ...  # the request raised: exchange.error, no answer
+
 
 def watch(session: Any, watcher: Watcher) -> bool:
     """Adds the watcher's hooks to the session. False when it isn't a session this knows how to watch."""
     try:
         if isinstance(getattr(session, "event_hooks", None), Mapping):
-            return _watch_httpx(session, watcher)
-        if isinstance(getattr(session, "hooks", None), dict) and hasattr(session, "mount"):
-            return _watch_requests(session, watcher)
+            watched = _watch_httpx(session, watcher)
+        elif isinstance(getattr(session, "hooks", None), dict) and hasattr(session, "mount"):
+            watched = _watch_requests(session, watcher)
+        else:
+            return False
+        _watch_failures(session, watcher)
+        return watched
     except Exception:
         logger.exception("inference_tracker: could not watch an HTTP client")
     return False
+
+
+_FAILURE_WATCHERS = "_inference_tracker_failure_watchers"
+# Inside a watched send(): requests sends each redirect with send() again, and only the outer one reports.
+_sending: contextvars.ContextVar[bool] = contextvars.ContextVar("inference_tracker_sending", default=False)
+
+
+def _watch_failures(session: Any, watcher: Watcher) -> None:
+    """Wraps the session's send() (once, for every watcher of the session) to see requests that raise."""
+    watchers: list[Watcher] | None = getattr(session, _FAILURE_WATCHERS, None)
+    if watchers is not None:
+        if all(w.name != watcher.name for w in watchers):
+            watchers.append(watcher)
+        return
+    watchers = [watcher]
+    send = session.send
+    is_async = inspect.iscoroutinefunction(send)
+
+    def failed(request: Any, started: tuple[float, float], error: BaseException) -> None:
+        try:
+            if not _client.active():
+                return
+            url = str(request.url)
+            host = (urlsplit(url).hostname or "").lower()
+            for w in list(watchers):
+                if w.accepts(host):
+                    ex = Exchange(request, None, url, started, time.monotonic() - started[1], error)
+                    try:
+                        w.failed(ex)
+                    except Exception:
+                        logger.exception("inference_tracker: tracking a failed HTTP call failed")
+        except Exception:
+            logger.exception("inference_tracker: could not read a failed HTTP request")
+
+    if is_async:
+
+        async def send_async(request: Any, *args: Any, **kwargs: Any) -> Any:
+            started = (time.time(), time.monotonic())
+            token = _sending.set(True)
+            try:
+                return await send(request, *args, **kwargs)
+            except BaseException as e:
+                if token.old_value is not True:
+                    failed(request, started, e)
+                raise
+            finally:
+                _sending.reset(token)
+
+        session.send = send_async
+    else:
+
+        def send_sync(request: Any, *args: Any, **kwargs: Any) -> Any:
+            started = (time.time(), time.monotonic())
+            token = _sending.set(True)
+            try:
+                return send(request, *args, **kwargs)
+            except BaseException as e:
+                if token.old_value is not True:
+                    failed(request, started, e)
+                raise
+            finally:
+                _sending.reset(token)
+
+        session.send = send_sync
+    setattr(session, _FAILURE_WATCHERS, watchers)
+
+
+def error_type(ex: Exchange) -> str | None:
+    """A failed request's error type: the exception's class name. None for an answered one."""
+    return error_name(ex.error) if ex.error is not None else None
 
 
 def _watch_httpx(session: Any, watcher: Watcher) -> bool:
@@ -90,7 +187,7 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
 
     def on_request(request: Any) -> None:
         try:
-            if watcher.accepts((request.url.host or "").lower()):
+            if _client.active() and watcher.accepts((request.url.host or "").lower()):
                 with lock:
                     sent[request] = (time.time(), time.monotonic())
         except Exception:
@@ -100,7 +197,7 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
         """The exchange, and whether the watcher wants the answer's body."""
         try:
             request = response.request
-            if not watcher.accepts((request.url.host or "").lower()):
+            if not _client.active() or not watcher.accepts((request.url.host or "").lower()):
                 return None, False
             with lock:
                 started = sent.pop(request, None)
@@ -151,7 +248,7 @@ def _watch_requests(session: Any, watcher: Watcher) -> bool:
     def on_response(response: Any, *args: Any, **kwargs: Any) -> None:
         try:
             request = response.request
-            if not watcher.accepts((urlsplit(request.url).hostname or "").lower()):
+            if not _client.active() or not watcher.accepts((urlsplit(request.url).hostname or "").lower()):
                 return None
             elapsed = response.elapsed.total_seconds()  # requests times until the headers came
             ex = Exchange(request, response, request.url, (time.time() - elapsed, time.monotonic() - elapsed), elapsed)
