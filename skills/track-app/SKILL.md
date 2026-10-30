@@ -87,8 +87,9 @@ request when the app gives up). The rest are only reported: the team decides.
 If the key is there and test deploys are allowed, do the add-tracking guide's test run (step 5)
 first. Otherwise open the PR anyway and list the test run under "Before it records anything".
 
-Open each PR as a **draft**. Don't request reviews, merge or deploy to production: the team does
-that. The description is short (aim for one screen), in this shape:
+Open each PR **ready to merge, not as a draft**: the goal is a PR the team can merge as it is. Don't
+merge it or deploy to production yourself: the team does that. The description is short (aim for one
+screen), in this shape:
 
 ```markdown
 Records each AI call this repo makes with the user and task it was for, using inference-tracker

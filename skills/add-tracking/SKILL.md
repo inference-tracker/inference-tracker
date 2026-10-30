@@ -73,6 +73,8 @@ call to its **parent** instead, and the dashboard finds the user by walking up t
   provider's webhook helper (`inference_tracker.fal.webhook(body)`); it joins the start by request id.
 - **The app's own fal apps**: wrap the endpoint in `inference_tracker.fal.inside(self)`. Every call
   made inside gets the fal request the app is serving as its parent.
+- **The app's own Modal functions**: wrap the work in `inference_tracker.modal.inside()`, the same
+  way.
 - **fal workflows**: submit with the header `inference_tracker.fal.WORKFLOW_ENVELOPE_HEADER: "true"`
   (only to `workflows/...` addresses). The result then lists each step, and each step is recorded
   with the run as its parent. The app must read `output` from the result.
@@ -84,11 +86,21 @@ call still runs.
 
 | Package | Wrap with | Tracked |
 |---|---|---|
-| `fal_client` | `inference_tracker.fal.track(client)` | submit, subscribe, run, results, webhooks |
-| `openai` (OpenAI and Azure) | `inference_tracker.openai.track(client)` | responses, chat completions, images, raw `post` to an images route |
-| `google-genai` | `inference_tracker.google.track(client)` | generate_content, images, Veo (start and finish) |
+| `fal_client` | `inference_tracker.fal.track(client)` | submit, subscribe, run, results, cancel; webhooks with `fal.webhook(body)` |
+| fal over plain HTTP (`httpx`, `requests`, a subclass of fal's clients) | `inference_tracker.fal.track_http(http)` | submits to `queue.fal.run` and their results, calls to `fal.run` |
+| `openai` (OpenAI, Azure, Foundry) | `inference_tracker.openai.track(client)` | responses, chat completions, images, raw `post` to an images route, embeddings, moderations, streams |
+| an `openai` client pointed at Vertex | `inference_tracker.openai.track(client)` | as above, recorded as Vertex with its project and location |
+| OpenAI Agents SDK | pass a tracked `AsyncOpenAI` to `set_default_openai_client` or to the model | every model call of a run |
+| `google-genai` | `inference_tracker.google.track(client)` | generate_content, images, Veo (start and finish), embed_content |
+| `vertexai` embeddings | `inference_tracker.google.track(TextEmbeddingModel...)` | get_embeddings |
+| `litellm` (Bedrock and every provider it routes to, the Agents SDK's `LitellmModel`) | `inference_tracker.litellm.track()`, once at startup | completions, embeddings, images, responses, streams |
+| Modal | `inference_tracker.modal.function(app, name)`; web endpoints with `modal.track_http(http, apps=[...])` | `remote()`, `spawn()` and its result, web endpoint calls |
+| Pruna (HTTP or `pruna_client`) | `inference_tracker.pruna.track_http(http)` | predictions (start and finish) |
 
-A call the wrappers don't cover (another SDK, raw HTTP, a layer like LiteLLM): add a wrapper to the
+The README has the details of each. Wrap a call once: not both `track()` and `track_http()` on fal,
+and no tracked `openai` client handed to LiteLLM, or the call is recorded twice.
+
+A call the wrappers don't cover (another SDK, raw HTTP to another provider): add a wrapper to the
 library, with tests, in its own pull request, rather than recording it by hand in the app. Record by
 hand (`inference_tracker.record(...)`) only as a stopgap, and say so in the PR.
 
