@@ -1,6 +1,6 @@
 ---
 name: find-ai-calls
-description: Find every AI call in the current repo or folder (provider, model, where in the code, how it's called, who it's for) and which ones inference-tracker doesn't record yet. Changes no code; saves the list to .inference-tracker/calls.md, which the add-tracking command works from. Use when asked to find, list or count AI calls, to see what isn't tracked, or before adding tracking to an app.
+description: Find every AI call in the current repo or folder (provider, model, where in the code, how it's called, who it's for) and which ones inference-tracker doesn't record yet. Changes no code; saves the list to .inference-tracker/calls.md (for people) and calls.json (the same list and its open questions, for programs), which the add-tracking command works from. Use when asked to find, list or count AI calls, to see what isn't tracked, or before adding tracking to an app.
 ---
 
 # Finding every AI call
@@ -11,8 +11,9 @@ who it's for, and which bill it lands on. The add-tracking command works from th
 search again, so the list must be complete.
 
 **This changes no code.** No edits, no commits, no branch switches, no installs, no deploys, and no
-calls to the providers. Its only output is one file, `.inference-tracker/calls.md`, in the folder it
-was run in (step 5), plus a short summary in the chat.
+calls to the providers. Its only output is two files in `.inference-tracker/`, in the folder it was run
+in: `calls.md` and `calls.json`, the same list for people and for programs (step 5), plus a short
+summary in the chat.
 
 Code reading finds candidates. It can't see a provider chosen at runtime, calls made from outside the
 code on the same keys, or tell for sure live code from dead. Say so in the report instead of guessing;
@@ -124,6 +125,7 @@ one line with the count.
 
 | Field | What to write |
 |---|---|
+| Name | what the call does for the product, short, lowercase, with dashes: `prompt-suggestions`, `edit-planning-agent`, `photo-edit`. Unique in the app, and the same when the code moves: the app's records carry it (`context(call_name=...)`), so cost can be shown per call. A name the code already sets, or one from an older list for the same call, is kept |
 | Where | `file:line` (the line that sends the call), and the function |
 | Provider and model | as the code names them. A model from a variable: say where the value comes from |
 | How it's called | SDK (which package), raw HTTP, through a layer (Agents SDK, LiteLLM...), or the provider is picked at runtime (from where) |
@@ -139,6 +141,17 @@ Azure, a router or a local server is that provider. Say both.
 
 **A provider picked at runtime:** list every provider the code can pick, and where the choice is read.
 Which one runs today can't be known from code: say so.
+
+**Questions only a person can answer.** Where the code can't settle something, write a question
+instead of guessing: who a call is for when the code doesn't say; whether code that looks dead still
+runs; which environment is test, if the deploy files don't say; whether to make a library change for a
+kind of call the library can't record yet (or leave it untracked for now); whether to leave out a call
+that looks like it should be (an internal tool, a free call). Each question has one shape:
+
+- **one line**, in plain words, naming the call by what it does, not by an id;
+- **where**: the repo, file and line it is about;
+- **two or three answers**, each short, with what it would mean ("The edit's user: recorded with that
+  user"). A person can always write something else instead.
 
 **Recorded wrong** counts as not tracked: a webhook that records the result before checking whether
 the task already finished (a resent webhook records it twice), code that stops waiting on a provider
@@ -167,7 +180,7 @@ built and deployed that nothing calls any more, and machines named in config who
 ## 5. Write the list
 
 Save it to `.inference-tracker/calls.md` in the folder this was run in (create the folder; replace an
-older file, keeping nothing from it). It starts with:
+older file, keeping nothing from it but the names of calls found again). It starts with:
 
 - the date, and each repo's branch and commit that were read (add-tracking checks them);
 - **To track:** every live call that isn't fully tracked, or is tracked but recorded wrong (see below),
@@ -176,6 +189,69 @@ older file, keeping nothing from it). It starts with:
 - **Left out on purpose:** calls the user decided not to track, with the reason. Never in "To track".
 
 Then the report below. In the chat, give only the summary line and the "To track" list.
+
+Next to it, save `.inference-tracker/calls.json`: the same calls and the open questions, for programs
+(a website shows the list from it, and add-tracking reads the answers from it). Nothing in it that
+isn't in `calls.md`. Exactly this shape; a field that doesn't apply is `null`:
+
+```json
+{
+  "version": 1,
+  "found_on": "2026-11-05",
+  "repos": [{"repo": "app-api", "branch": "main", "commit": "4f2c1e9", "commit_date": "2026-11-04"}],
+  "calls": [
+    {
+      "name": "prompt-suggestions",
+      "todo": "T2",
+      "repo": "app-api",
+      "file": "functions/services/prompts.py",
+      "line": 108,
+      "function": "PromptService.suggest",
+      "provider": "gcp.vertex_ai",
+      "model": "gemini-3.1-flash-lite",
+      "how_called": "OpenAI Agents SDK, OpenAI client pointed at Vertex",
+      "result": "direct",
+      "who_for": "user",
+      "calls_per_use": "1 to 3 agent turns",
+      "account": "Vertex project app-prod",
+      "live": "live",
+      "app_traffic": true,
+      "tracked": "partly",
+      "status": "to_track",
+      "needs": "wrap the client handed to the Agents SDK",
+      "note": null
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q1",
+      "calls": ["daily-report"],
+      "question": "The daily report runs with no user. Track it as the app's own cost, or leave it out?",
+      "repo": "app-api",
+      "file": "functions/reports/daily.py",
+      "line": 40,
+      "answers": ["Track it, with no user", "Leave it out"],
+      "answer": null
+    }
+  ]
+}
+```
+
+- `name`: as in the table; `todo`: its id in "To track", or `null`.
+- `provider`: the library's provider names where it has them (`fal`, `openai`, `azure.ai.openai`,
+  `gcp.vertex_ai`, `gcp.gemini`, `aws.bedrock`, `modal`, `pruna`), else the provider's own name.
+  `model`: as the code names it, or where the value is read from.
+- `result`: `direct`, `stream`, `queue_webhook`, `polled`, `database` or `inside_another_call`.
+- `who_for`: `user`, `task` (a task id only), `parent` (linked through the call that made it) or
+  `nothing`.
+- `live`: `live`, `live_if_config`, `called_from_outside`, `maybe_dead`, `coming` or `dead`.
+  `app_traffic`: `false` for scripts, tests, evals and internal tools.
+- `tracked`: `tracked`, `partly`, `wrapper_not_used`, `no_wrapper`, `recorded_wrong` or
+  `no_library_for_language`.
+- `status`: `to_track` (in "To track"), `tracked`, `left_out` (on purpose; `note` says why), or
+  `not_tracking` (dead, or not to be tracked for another reason in `note`).
+- `questions`: every open question, in the shape above. `answer` stays `null` here: whoever answers
+  (a person in the chat, or the website) writes the chosen answer or their own words into it.
 
 Name each app the way the company's own list of apps does (an analytics table, a config): ask the user
 where that list is. A repo that isn't on it (a shared engine, a tool) is reported, but not as an app.

@@ -37,13 +37,13 @@ Ask these together, in one message, then carry on:
 
 ## 2. Find the calls
 
-Run the find-ai-calls guide on the app's folder, all of it, and save `.inference-tracker/calls.md`.
-An older file is replaced, as that guide says.
+Run the find-ai-calls guide on the app's folder, all of it, and save `.inference-tracker/calls.md`
+and `calls.json`. Older files are replaced, as that guide says.
 
 ## 3. Stop: the questions only a person can answer
 
-From the list, collect every open question and ask them **all in one message**, each with its options
-and what each would mean:
+Ask every open question in `calls.json` (the find-ai-calls guide writes them, in one shape) **all in
+one message**, each with its options and what each would mean. They cover:
 
 - **Who a call is for**, where the code doesn't say (the add-tracking guide, step 2).
 - **Code that looks dead:** does it still run? Untracked is fine for dead code; a wrong guess isn't.
@@ -53,7 +53,8 @@ and what each would mean:
 - **Which environment is test**, if the deploy files don't say.
 - Calls to leave out on purpose, if any look like they should be (internal tools, free calls).
 
-Write each answer into `calls.md` ("Left out on purpose", or the call's line). Then do the rest
+Write each answer into `calls.md` ("Left out on purpose", or the call's line) and into the
+question's `answer` in `calls.json`. Then do the rest
 without stopping, except for something new that only a person can decide. Never guess an answer to
 keep going.
 

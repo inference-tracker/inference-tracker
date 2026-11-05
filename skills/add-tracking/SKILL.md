@@ -30,14 +30,17 @@ them. Provider APIs change; this guide only tells you what to look for.
 ## 1. Start from the list of calls
 
 Read `.inference-tracker/calls.md` in this folder or the nearest folder above it (find may have been
-run on a folder holding several repos). **Don't search the code again:**
+run on a folder holding several repos), and `calls.json` next to it. **Don't search the code again:**
 the find-ai-calls command already did, and its "To track" list is the work.
+
+- **Answers:** a question in `calls.json` with an `answer` is settled: follow it, don't ask again.
+  Ask only the ones still `null`, and write each answer into the file.
 
 - No file: stop, and tell the user to run find-ai-calls first.
 - The code changed since (the commit in the file isn't the current one, and the change touches AI
   calls): say so, and ask whether to run find-ai-calls again first.
-- Work through "To track" one id at a time. When one is done, mark it in the file (`done`, with the
-  commit). A call met on the way that isn't on the list is added to it, with a note that find missed
+- Work through "To track" one id at a time. When one is done, mark it in both files (`done`, with
+  the commit, in `calls.md`; `"status": "tracked"` in `calls.json`). A call met on the way that isn't on the list is added to it, with a note that find missed
   it, so the find-ai-calls guide can be fixed.
 
 For each call, the list says how the result comes back:
@@ -61,6 +64,14 @@ Find where the app knows the user and the task: usually where a task is created.
 ```python
 with inference_tracker.context(user_id=user_id, task_id=task_id):
     ...  # every tracked call in here gets this user and task
+```
+
+**Name each call** with its name from the list, as close to the call as the code allows: around the
+line that makes the call, or where it's called from when one function serves several named calls.
+
+```python
+with inference_tracker.context(call_name="prompt-suggestions"):
+    suggestions = service.suggest(edit)
 ```
 
 Use the app's own stable user id (the one its analytics and payments use). Never an email. A call
@@ -135,6 +146,7 @@ Make a few real generations in test, then check:
 - Every call has a user, or a parent that leads to one. A call whose parent was never recorded
   means something else called it (another app, a playground, a test tool): find out what.
 - Every `start` has its `finish`, except calls still running.
+- Every record has the call name from the list.
 - Batches report 0 records lost.
 - No record holds a prompt, an image, a URL or an output.
 
