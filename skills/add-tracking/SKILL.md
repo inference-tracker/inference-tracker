@@ -35,6 +35,9 @@ the find-ai-calls command already did, and its "To track" list is the work.
 
 - **Answers:** a question in `calls.json` with an `answer` is settled: follow it, don't ask again.
   Ask only the ones still `null`, and write each answer into the file.
+- **"Decide for me"** as an answer means the person leaves it to you: take the choice that changes the
+  app least and keeps the numbers right (when in doubt, record the call rather than leave it out),
+  and say in the PR what you chose and why, so the review can change it.
 
 - No file: stop, and tell the user to run find-ai-calls first.
 - The code changed since (the commit in the file isn't the current one, and the change touches AI
