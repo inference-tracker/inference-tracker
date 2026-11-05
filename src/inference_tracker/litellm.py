@@ -349,6 +349,7 @@ def _after(
                 "task_id": ctx.task_id,
                 "parent_provider": ctx.parent_provider,
                 "parent_request_id": ctx.parent_request_id,
+                "call_name": ctx.call_name,
             }
         started, ended = _seconds(start_time), _seconds(end_time)
         record = Record.new(

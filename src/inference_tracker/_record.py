@@ -64,6 +64,8 @@ class Record:
     # The call that made this one, as its provider knows it (e.g. "fal" and fal's request id).
     parent_provider: str | None = None
     parent_request_id: str | None = None
+    # Which call in the app's code made it ("prompt-suggestions"), from the current context.
+    call_name: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)  # lets the server drop duplicates
     recorded_at: float = field(default_factory=time.time)
 
@@ -74,6 +76,7 @@ class Record:
         fields.setdefault("task_id", ctx.task_id)
         fields.setdefault("parent_provider", ctx.parent_provider)
         fields.setdefault("parent_request_id", ctx.parent_request_id)
+        fields.setdefault("call_name", ctx.call_name)
         return cls(provider=provider, model=model, **fields)
 
     def to_wire(self) -> dict:
@@ -96,6 +99,7 @@ class Record:
             "task_id": self.task_id,
             "parent_provider": self.parent_provider,
             "parent_request_id": self.parent_request_id,
+            "call_name": self.call_name,
         }
         return {k: v for k, v in wire.items() if v is not None and v != {}}
 

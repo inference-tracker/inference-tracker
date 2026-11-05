@@ -92,3 +92,11 @@ def test_what_counts_as_a_code_and_as_stopping_waiting():
     ]
     assert cancelled(asyncio.CancelledError()) and cancelled(TimeoutError()) and cancelled(asyncio.TimeoutError())
     assert not cancelled(ValueError()) and not cancelled(None)
+
+
+def test_a_record_names_the_call_it_came_from():
+    with context(user_id="u1"), context(call_name="prompt-suggestions"):
+        r = Record.new("gcp.vertex_ai", "gemini-3.1-flash-lite", request_id="resp-1", status="ok")
+    assert r.call_name == "prompt-suggestions" and r.user_id == "u1"
+    assert r.to_wire()["call_name"] == "prompt-suggestions"
+    assert "call_name" not in Record.new("fal", "fal-ai/flux/dev").to_wire()  # not named: not sent

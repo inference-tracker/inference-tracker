@@ -210,6 +210,16 @@ def test_submit_then_get_is_a_start_and_a_finish(sent):
     assert handle.response_url.endswith("req-1")  # everything else on the handle passes through
 
 
+def test_a_finish_outside_the_named_block_keeps_the_call_name(sent):
+    client = track(FalClient())
+    with context(user_id="u1", call_name="image-synthesis"):
+        handle = client.submit("fal-ai/flux-2-pro", arguments=ARGS)
+    handle.get()  # the result is read later, somewhere else
+    start, finish = sent
+    assert start.call_name == finish.call_name == "image-synthesis"
+    assert finish.user_id == "u1"
+
+
 def test_a_failed_result_is_a_finish_with_the_providers_error_code(sent):
     client = track(FalClient(error=FalError("content_policy_violation")))
     handle = client.submit("fal-ai/flux/dev", arguments=ARGS)

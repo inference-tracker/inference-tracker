@@ -53,3 +53,11 @@ def test_a_call_made_inside_another_names_it_as_parent():
         inner = Record.new("gcp.vertex_ai", "veo-3.1-fast", request_id="op-1")
     assert (inner.parent_provider, inner.parent_request_id) == ("fal", "req-9")
     assert inner.user_id is None  # the server finds the user by walking up to the parent
+
+
+def test_an_inner_block_names_the_call_and_keeps_who_it_is_for():
+    with context(user_id="u1", call_name="edit"):
+        with context(call_name="prompt-suggestions") as inner:
+            assert (inner.user_id, inner.call_name) == ("u1", "prompt-suggestions")
+        assert current().call_name == "edit"
+    assert current().call_name is None

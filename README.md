@@ -62,6 +62,17 @@ with inference_tracker.context(parent_provider="fal", parent_request_id=rid):
     ...
 ```
 
+Name each call where it is made, so two places that use the same model (an agent that plans an edit,
+and prompt suggestions, both on one Gemini model) can be told apart, and cost can be shown per call.
+Short, lowercase, with dashes; the name stays the same when the code moves:
+
+```python
+with inference_tracker.context(call_name="prompt-suggestions"):
+    ...
+```
+
+A result read later, somewhere else, keeps the name its call was made with.
+
 ## fal
 
 Wrap the client once, then call it as before.

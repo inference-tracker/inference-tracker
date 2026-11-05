@@ -1,4 +1,4 @@
-"""Who a call is for: the user, the task, and the call that made it.
+"""Who a call is for: the user, the task, and the call that made it. And which call in the code it is.
 
 Set once where work starts, read by every tracked call inside it:
 
@@ -13,6 +13,12 @@ parent, the way the provider's bill knows it: the provider and its request id.
 
 The server finds the user and task of such a call by walking up its parents, so the app inside
 doesn't need to be told them.
+
+Two places in the code can call the same model (an agent that plans an edit, and prompt suggestions,
+both on one Gemini model). A name for the call tells their records apart, and gives cost per call:
+
+    with inference_tracker.context(call_name="prompt-suggestions"):
+        ...
 
 Built on contextvars, so each asyncio task (and each request in a server that runs several at
 once) keeps its own values. asyncio.to_thread copies them into the thread; a plain
@@ -37,6 +43,8 @@ class Context:
     # The call that made this one, as its provider knows it: "fal" and fal's request id, say.
     parent_provider: str | None = None
     parent_request_id: str | None = None
+    # Which call in the app's code this is, e.g. "prompt-suggestions". Set where the call is made.
+    call_name: str | None = None
 
 
 _current: contextvars.ContextVar[Context] = contextvars.ContextVar("inference_tracker_context", default=Context())  # noqa: B039 (Context is frozen)
@@ -55,6 +63,7 @@ def context(
     task_id: Any = None,
     parent_provider: Any = None,
     parent_request_id: Any = None,
+    call_name: Any = None,
     flush: bool = False,
 ) -> Generator[Context, None, None]:
     """Values left out are kept from the outer context. flush=True sends what's waiting when the
@@ -66,6 +75,7 @@ def context(
         "task_id": task_id,
         "parent_provider": parent_provider,
         "parent_request_id": parent_request_id,
+        "call_name": call_name,
     }
     changes = {k: c for k, v in given.items() if v is not None and (c := _clean(v)) is not None}
     token = _current.set(replace(_current.get(), **changes))

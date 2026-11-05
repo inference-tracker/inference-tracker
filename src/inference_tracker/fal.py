@@ -287,10 +287,13 @@ class _Call:
                 task_id=start.task_id,
                 parent_provider=start.parent_provider,
                 parent_request_id=start.parent_request_id,
+                call_name=start.call_name,
             )
         )
         if result is not None:
-            _record_steps(result, start.request_id, user_id=start.user_id, task_id=start.task_id)
+            _record_steps(
+                result, start.request_id, user_id=start.user_id, task_id=start.task_id, call_name=start.call_name
+            )
 
     def completed(self, request_id: str | None, error_type: str | None, stopped: bool = False) -> None:
         """The whole call seen here (run(), or a submit that failed): one "call" record. `stopped`: the app

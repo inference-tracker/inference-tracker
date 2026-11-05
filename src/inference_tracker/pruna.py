@@ -148,6 +148,7 @@ class _Call:
                 task_id=start.task_id,
                 parent_provider=start.parent_provider,
                 parent_request_id=start.parent_request_id,
+                call_name=start.call_name,
             )
         )
 
