@@ -141,7 +141,7 @@ Questions are asked fresh.
 | Field | What to write |
 |---|---|
 | Name | what the call does for the product, short, lowercase, with dashes: `prompt-suggestions`, `edit-planning-agent`, `photo-edit`. Unique in the app, and the same when the code moves: the app's records carry it (`context(call_name=...)`), so cost can be shown per call. A name the code already sets, or one from an older list for the same call, is kept |
-| Where | `file:line` (the line that sends the call), and the function |
+| Where | `file:line` (the line that sends the call), the function, and that line's text copied exactly |
 | Provider and model | as the code names them. A model from a variable: say where the value comes from |
 | How it's called | SDK (which package), raw HTTP, through a layer (Agents SDK, LiteLLM...), or the provider is picked at runtime (from where) |
 | How the result comes back | **direct**; **stream**; **queue + webhook** (name the handler); **polled** until done (Veo, a GPU host's `/status`); **written to the database** by the worker (no webhook: the finish is only seen in the task document); **inside another call** (made by one of the app's own serverless apps, or by a tool inside an agent run) |
@@ -221,6 +221,7 @@ isn't in `calls.md`. Exactly this shape; a field that doesn't apply is `null`:
       "repo": "app-api",
       "file": "functions/services/prompts.py",
       "line": 108,
+      "code": "result = await Runner.run(agent, prompt)",
       "function": "PromptService.suggest",
       "provider": "gcp.vertex_ai",
       "model": "gemini-3.1-flash-lite",
@@ -245,6 +246,7 @@ isn't in `calls.md`. Exactly this shape; a field that doesn't apply is `null`:
       "repo": "app-api",
       "file": "functions/reports/daily.py",
       "line": 40,
+      "code": "def send_daily_report():",
       "answers": ["Track it, with no user", "Leave it out"],
       "answer": null
     }
@@ -253,6 +255,10 @@ isn't in `calls.md`. Exactly this shape; a field that doesn't apply is `null`:
 ```
 
 - `name`: as in the table; `todo`: its id in "To track", or `null`.
+- `line` and `code`: the line number, and that line's text copied exactly from the file (one line;
+  for a call written over several lines, the line it starts on). Take both from the file as you write
+  the row, not from memory: a program checks the number against the text, and moves it to the line
+  where the text really is.
 - `provider`: the library's provider names where it has them (`fal`, `openai`, `azure.ai.openai`,
   `gcp.vertex_ai`, `gcp.gemini`, `aws.bedrock`, `modal`, `pruna`), else the provider's own name.
   `model`: as the code names it, or where the value is read from.
