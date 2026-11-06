@@ -118,10 +118,25 @@ work with no model (a video render on a GPU host) still costs machine time: list
 
 ## 3. Write one line per call
 
-One line per call site and model. Split a line when one site serves several calls that are tracked
-differently (two models, one covered and one not), or whose callers differ in who the call is for or
-which provider they can pick; group the rest (the same agent code run with seven alike configs) into
-one line with the count.
+**One row per place in the code that sends a request:** the line that calls the provider's client or
+makes the HTTP request, with its function. That is the unit every time, so two runs on the same code
+give the same rows:
+
+- One line that can send to several models or endpoints (picked from a config, or by the request) is
+  one row; list the models in it. If only some of them can be recorded, the row is `partly` tracked.
+- Two lines that send requests are two rows, even when they look alike.
+- Callers that differ in who the call is for stay one row; say so in the row (who it's for, note).
+- Test tools, scripts, evals, internal tools and code that looks dead are rows too, every run: status
+  `left_out` or `not_tracking`, with the reason in the note. Never list one in one run and drop it in
+  the next.
+- An app or machine that nothing in the code calls is not a row: it goes under machines (step 4).
+
+**The last list.** If `.inference-tracker/last-calls.json` is there (the list from the last run, in
+the `calls.json` shape below), start from it. Check each of its rows against the code: still there
+(keep the row and its name, update the line and details), moved (same function and request on another
+line: same row, same name), or gone (not in the new list; say so in the report). Add rows only for
+places that are new. Never split or merge a row that is still there unless the code itself changed.
+Questions are asked fresh.
 
 | Field | What to write |
 |---|---|
