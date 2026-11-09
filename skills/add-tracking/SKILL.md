@@ -85,6 +85,9 @@ call to its **parent** instead, and the dashboard finds the user by walking up t
 
 - **A webhook** gets the result of a call another process sent. Record the finish with the
   provider's webhook helper (`inference_tracker.fal.webhook(body)`); it joins the start by request id.
+- **A result the app ignores still counts.** Where a webhook handler returns early because the work was
+  already marked failed, timed out or cancelled, record the finish before returning: the provider still
+  ran it and billed it. Skip only a result that was already recorded.
 - **The app's own fal apps**: wrap the endpoint in `inference_tracker.fal.inside(self)`. Every call
   made inside gets the fal request the app is serving as its parent.
 - **The app's own Modal functions**: wrap the work in `inference_tracker.modal.inside()`, the same
