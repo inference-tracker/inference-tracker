@@ -130,9 +130,11 @@ Once per process, at startup:
 inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "test")
 ```
 
-- The key comes from a secret, one per app. Without a key nothing is sent and the app runs as before.
-- **A secret bound to a function must exist in every project its branch deploys to** (test and
-  production) before the pull request is merged, or the deploy fails. Say so in the PR.
+- One key per app. It can only send records, so in a private repo it may be written in the code. In a
+  public repo it comes from a secret (`INFERENCE_TRACKER_KEY`). A value set in the environment wins over
+  the one in the code. Without a key nothing is sent and the app runs as before.
+- **Where the key is a secret bound to a function, it must exist in every project its branch deploys
+  to** (test and production) before the pull request is merged, or the deploy fails. Say so in the PR.
 - **fal apps:** fal secrets are shared by the whole account, so one secret serves the app's test and
   production versions. Add the library to the package list each app installs from (often its own
   list, not the repo's main one). Code fal ships with the app but doesn't install (the app's own

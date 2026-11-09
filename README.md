@@ -18,7 +18,9 @@ inference_tracker.init(url="https://.../ingest", key="...", app="myapp")
 ```
 
 Or set `INFERENCE_TRACKER_URL`, `INFERENCE_TRACKER_KEY` and `INFERENCE_TRACKER_APP` (and optionally
-`INFERENCE_TRACKER_ENVIRONMENT`, e.g. `prod`). Without url, key and app, nothing is sent and every call
+`INFERENCE_TRACKER_ENVIRONMENT`, e.g. `prod`). The key can only send records, so it may be written in the
+code of a private repo. If `INFERENCE_TRACKER_URL` or `INFERENCE_TRACKER_KEY` is set, it wins over the
+value in the code. Without url, key and app, nothing is sent and every call
 below does nothing: no answer is read, no body parsed.
 
 `init()` can be called at startup or at the start of every request, from any number of threads at
