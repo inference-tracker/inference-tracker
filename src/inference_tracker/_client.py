@@ -253,15 +253,16 @@ def init(
     environment: str | None = None,
     **options: Any,
 ) -> Client | None:
-    """Starts sending. Values left out come from INFERENCE_TRACKER_URL, INFERENCE_TRACKER_KEY, INFERENCE_TRACKER_APP and
-    INFERENCE_TRACKER_ENVIRONMENT. Without a url, key and app nothing is sent and every call stays a no-op.
+    """Starts sending. Values left out come from INFERENCE_TRACKER_APP and INFERENCE_TRACKER_ENVIRONMENT. For the url
+    and key, INFERENCE_TRACKER_URL and INFERENCE_TRACKER_KEY win over what's passed, so a key written in the code can be
+    replaced without changing the code. Without a url, key and app nothing is sent and every call stays a no-op.
 
     Safe to call from several threads at once, and cheap to call again: with the same values it returns the
     client already running, so an app can call it at the start of every request instead of keeping a flag of
     its own. Other values replace the client (the old one sends what it has, without holding up the others)."""
     global _client, _settings
-    url = url or os.environ.get("INFERENCE_TRACKER_URL")
-    key = key or os.environ.get("INFERENCE_TRACKER_KEY")
+    url = os.environ.get("INFERENCE_TRACKER_URL") or url
+    key = os.environ.get("INFERENCE_TRACKER_KEY") or key
     app = app or os.environ.get("INFERENCE_TRACKER_APP")
     environment = environment or os.environ.get("INFERENCE_TRACKER_ENVIRONMENT")
     settings = (url, key, app, environment, options) if url and key and app else None

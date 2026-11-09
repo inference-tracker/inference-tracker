@@ -270,6 +270,20 @@ def test_init_is_cheap_to_repeat_and_safe_from_many_threads(no_global_client):
     assert server.records()[0]["gen_ai.response.id"] == "req-1"
 
 
+def test_the_environment_wins_over_a_url_and_key_in_the_code(no_global_client, monkeypatch):
+    monkeypatch.setenv("INFERENCE_TRACKER_URL", "https://from-env.test")
+    monkeypatch.setenv("INFERENCE_TRACKER_KEY", "from-env")
+    client = inference_tracker.init("https://in-code.test", "in-code", "myapp", background=False, post=FakeServer())
+    assert (client.url, client.key) == ("https://from-env.test", "from-env")
+
+
+def test_a_url_and_key_in_the_code_work_without_the_environment(no_global_client, monkeypatch):
+    monkeypatch.delenv("INFERENCE_TRACKER_URL", raising=False)
+    monkeypatch.delenv("INFERENCE_TRACKER_KEY", raising=False)
+    client = inference_tracker.init("https://in-code.test", "in-code", "myapp", background=False, post=FakeServer())
+    assert (client.url, client.key) == ("https://in-code.test", "in-code")
+
+
 def test_init_without_values_warns_once(no_global_client, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="inference_tracker")
     for name in ("INFERENCE_TRACKER_URL", "INFERENCE_TRACKER_KEY", "INFERENCE_TRACKER_APP"):
