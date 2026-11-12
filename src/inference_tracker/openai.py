@@ -574,11 +574,14 @@ def _units(path: Path, response: Any) -> dict[str, float]:
         put(units, "input_tokens", get(usage, "input_tokens"))
         put(units, "output_tokens", get(usage, "output_tokens"))
         put(units, "cached_input_tokens", get(usage, "input_tokens_details", "cached_tokens"))
+        put(units, "cache_write_input_tokens", get(usage, "input_tokens_details", "cache_write_tokens"))
         put(units, "reasoning_tokens", get(usage, "output_tokens_details", "reasoning_tokens"))
         return units
     put(units, "input_tokens", get(usage, "prompt_tokens"))
     put(units, "output_tokens", get(usage, "completion_tokens"))
     put(units, "cached_input_tokens", get(usage, "prompt_tokens_details", "cached_tokens"))
+    # GPT-5.6 and later bill writing the prompt cache apart, and say how many input tokens were written.
+    put(units, "cache_write_input_tokens", get(usage, "prompt_tokens_details", "cache_write_tokens"))
     put(units, "reasoning_tokens", get(usage, "completion_tokens_details", "reasoning_tokens"))
     return units
 

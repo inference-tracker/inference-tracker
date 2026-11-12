@@ -451,7 +451,8 @@ def _units(call_type: Any, response: Any) -> dict[str, float]:
     put(units, "cached_input_tokens", cached if cached is not None else get(usage, "cache_read_input_tokens"))
     written = number(get(usage, "cache_creation_input_tokens"))
     written = written if written is not None else number(get(details, "cache_creation_tokens"))
-    if written:  # only providers that bill writing the cache (Anthropic models) report it
+    written = written if written is not None else number(get(details, "cache_write_tokens"))
+    if written:  # only providers that bill writing the cache (Anthropic models, GPT-5.6 and later) report it
         units["cache_write_input_tokens"] = written
     put(units, "reasoning_tokens", get(out_details, "reasoning_tokens"))
     return units

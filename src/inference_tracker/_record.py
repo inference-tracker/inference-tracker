@@ -49,7 +49,7 @@ class Record:
     error_type: str | None = None  # the exception's class name or the provider's error code, never a message
     started_at: float | None = None  # unix seconds
     duration_s: float | None = None
-    # Usage as the provider reports it: input_tokens, output_tokens, cached_input_tokens,
+    # Usage as the provider reports it: input_tokens, output_tokens, cached_input_tokens, cache_write_input_tokens,
     # images, video_seconds, audio_seconds... Numbers only.
     units: dict[str, float] = field(default_factory=dict)
     # Settings that change the price (resolution, requested duration, audio on/off), copied

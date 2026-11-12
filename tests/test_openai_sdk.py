@@ -438,3 +438,39 @@ def test_usage_on_every_chunk_keeps_the_last(records):
     list(track(client(server, VERTEX_GLOBAL)).chat.completions.create(model="m", messages=[], stream=True))
     (r,) = records
     assert r.units["output_text_tokens"] == 8
+
+
+# GPT-5.6 and later bill writing the prompt cache apart; Azure and OpenAI say how many tokens were written.
+
+
+def test_chat_on_azure_records_the_tokens_written_to_the_cache(records):
+    usage = {
+        "prompt_tokens": 1566,
+        "completion_tokens": 1518,
+        "total_tokens": 3084,
+        "prompt_tokens_details": {"audio_tokens": None, "cached_tokens": 1408, "cache_write_tokens": 150},
+        "completion_tokens_details": {"audio_tokens": None, "reasoning_tokens": 576},
+    }
+    track(client(Server(chat("gpt-6-luna", usage)), AZURE)).chat.completions.create(model="gpt-6-luna", messages=[])
+    (r,) = records
+    assert r.provider == "azure.ai.openai"
+    assert r.units == {
+        "input_tokens": 1566,
+        "output_tokens": 1518,
+        "cached_input_tokens": 1408,
+        "cache_write_input_tokens": 150,
+        "reasoning_tokens": 576,
+    }
+
+
+def test_responses_on_azure_records_the_tokens_written_to_the_cache(records):
+    usage = {**USAGE, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 690}}
+    track(client(Server(response("completed", usage)), AZURE)).responses.create(model="gpt-6-luna", input="x")
+    (r,) = records
+    assert r.units == {
+        "input_tokens": 700,
+        "output_tokens": 20,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 690,
+        "reasoning_tokens": 8,
+    }
