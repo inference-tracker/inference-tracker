@@ -1,6 +1,6 @@
 """Collects records in memory and sends them to the ingest endpoint in batches.
 
-    inference_tracker.init(url=..., key=..., app="myapp")   # at startup, or before each request: see init()
+    inference_tracker.init("https://<key>@<host>")          # at startup, or before each request: see init()
     inference_tracker.record(record)                         # the wrappers call this; never blocks, never raises
     inference_tracker.flush()                                # send what's waiting now
 
@@ -40,6 +40,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from . import _transport as transport
 from ._record import Record
@@ -246,6 +247,27 @@ _client_lock = threading.Lock()
 _before_flush: list[Callable[[float], None]] = []
 
 
+# The whole setup in one string, like a Sentry DSN: "https://<key>@<host>", the address records go to with the
+# key in it. Set in this variable, it wins over what the code passes.
+DSN_ENV = "INFERENCE_TRACKER_DSN"
+DEFAULT_PATH = "/api/ingest"
+
+
+def parse_dsn(dsn: Any) -> tuple[str, str] | None:
+    """(url, key) from "https://<key>@<host>[/path]", None when it isn't one. The path is /api/ingest unless given."""
+    if not isinstance(dsn, str):
+        return None
+    try:
+        parts = urlsplit(dsn.strip())
+        if parts.scheme not in ("http", "https") or not parts.username or not parts.hostname or parts.password:
+            return None
+        host = parts.hostname + (f":{parts.port}" if parts.port else "")
+        path = parts.path if parts.path not in ("", "/") else DEFAULT_PATH
+        return f"{parts.scheme}://{host}{path}", unquote(parts.username)
+    except ValueError:
+        return None
+
+
 def init(
     url: str | None = None,
     key: str | None = None,
@@ -253,32 +275,50 @@ def init(
     environment: str | None = None,
     **options: Any,
 ) -> Client | None:
-    """Starts sending. Values left out come from INFERENCE_TRACKER_APP and INFERENCE_TRACKER_ENVIRONMENT. For the url
-    and key, INFERENCE_TRACKER_URL and INFERENCE_TRACKER_KEY win over what's passed, so a key written in the code can be
-    replaced without changing the code. Without a url, key and app nothing is sent and every call stays a no-op.
+    """Starts sending.
+
+        inference_tracker.init("https://<key>@<host>", environment="prod")
+
+    The first argument is the string the product gives when a key is made: where records go, with the key in it.
+    INFERENCE_TRACKER_DSN, when set, wins over it, so it can be replaced without changing the code. Nothing else
+    from the environment changes where records go: an old INFERENCE_TRACKER_URL or INFERENCE_TRACKER_KEY is ignored.
+    The environment comes from INFERENCE_TRACKER_ENVIRONMENT when not passed.
+
+    The older form, init(url=..., key=..., app=...), works as before: there INFERENCE_TRACKER_URL and
+    INFERENCE_TRACKER_KEY win over what's passed, and INFERENCE_TRACKER_APP fills in the app. Without a url and key
+    (and, in the older form, an app) nothing is sent and every call stays a no-op.
 
     Safe to call from several threads at once, and cheap to call again: with the same values it returns the
     client already running, so an app can call it at the start of every request instead of keeping a flag of
     its own. Other values replace the client (the old one sends what it has, without holding up the others)."""
     global _client, _settings
-    url = os.environ.get("INFERENCE_TRACKER_URL") or url
-    key = os.environ.get("INFERENCE_TRACKER_KEY") or key
-    app = app or os.environ.get("INFERENCE_TRACKER_APP")
+    env_dsn = os.environ.get(DSN_ENV)
+    dsn = parse_dsn(env_dsn) if env_dsn else None
+    if env_dsn and dsn is None:
+        logger.warning("inference_tracker: %s isn't a https://<key>@<host> string; ignored", DSN_ENV)
+    dsn = dsn or (parse_dsn(url) if key is None else None)
+    if dsn is not None:
+        url, key = dsn
+        app = app or os.environ.get("INFERENCE_TRACKER_APP") or ""  # the key decides the project
+    else:
+        url = os.environ.get("INFERENCE_TRACKER_URL") or url
+        key = os.environ.get("INFERENCE_TRACKER_KEY") or key
+        app = app or os.environ.get("INFERENCE_TRACKER_APP")
     environment = environment or os.environ.get("INFERENCE_TRACKER_ENVIRONMENT")
-    settings = (url, key, app, environment, options) if url and key and app else None
+    settings = (url, key, app, environment, options) if url and key and (app or dsn is not None) else None
     with _client_lock:
         if settings == _settings and (settings is None or _client is not None):
             return _client  # the same values again: nothing to do (and, without values, said once already)
         old = _client
         try:
-            _client = Client(url, key, app, environment, **options) if settings is not None else None  # type: ignore[arg-type]
+            _client = Client(url, key, app or "", environment, **options) if settings is not None else None  # type: ignore[arg-type]
         except Exception:
             logger.exception("inference_tracker: could not start; records won't be sent")
             _client = None
         _settings = settings if _client is not None else None
         new = _client
     if settings is None:
-        logger.warning("inference_tracker: no url, key or app set; records won't be sent")
+        logger.warning("inference_tracker: no address and key set; records won't be sent")
     if old is not None:
         old.shutdown()  # outside the lock: calls that come meanwhile already see the new client
     return new

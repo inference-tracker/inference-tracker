@@ -284,6 +284,44 @@ def test_a_url_and_key_in_the_code_work_without_the_environment(no_global_client
     assert (client.url, client.key) == ("https://in-code.test", "in-code")
 
 
+def test_one_string_holds_the_address_and_key(no_global_client, monkeypatch):
+    for name in ("INFERENCE_TRACKER_DSN", "INFERENCE_TRACKER_APP"):
+        monkeypatch.delenv(name, raising=False)
+    # An old secret left attached doesn't win over the string: only INFERENCE_TRACKER_DSN does.
+    monkeypatch.setenv("INFERENCE_TRACKER_URL", "https://old.test/api/ingest")
+    monkeypatch.setenv("INFERENCE_TRACKER_KEY", "old-key")
+    server = FakeServer()
+    client = inference_tracker.init("https://itk_abc-123@ingest.test", environment="prod", background=False, post=server)
+    assert (client.url, client.key, client.environment) == ("https://ingest.test/api/ingest", "itk_abc-123", "prod")
+    inference_tracker.record(call())
+    inference_tracker.flush()
+    assert server.records()[0]["gen_ai.response.id"] == "req-0"
+
+
+def test_the_dsn_variable_wins_over_the_string_in_the_code(no_global_client, monkeypatch):
+    monkeypatch.setenv("INFERENCE_TRACKER_DSN", "http://env-key@localhost:3010/custom")
+    client = inference_tracker.init("https://code-key@ingest.test", background=False, post=FakeServer())
+    assert (client.url, client.key) == ("http://localhost:3010/custom", "env-key")
+
+
+def test_a_broken_dsn_variable_is_ignored(no_global_client, monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="inference_tracker")
+    monkeypatch.setenv("INFERENCE_TRACKER_DSN", "not a dsn")
+    client = inference_tracker.init("https://code-key@ingest.test", background=False, post=FakeServer())
+    assert client.key == "code-key"
+    assert any("INFERENCE_TRACKER_DSN" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_dsn():
+    parse = inference_tracker._client.parse_dsn
+    assert parse("https://k@h.test") == ("https://h.test/api/ingest", "k")
+    assert parse("https://k@h.test/") == ("https://h.test/api/ingest", "k")
+    assert parse("https://h.test/api/ingest") is None  # no key
+    assert parse("https://k:secret@h.test") is None
+    assert parse("ftp://k@h.test") is None
+    assert parse(None) is None
+
+
 def test_init_without_values_warns_once(no_global_client, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="inference_tracker")
     for name in ("INFERENCE_TRACKER_URL", "INFERENCE_TRACKER_KEY", "INFERENCE_TRACKER_APP"):
