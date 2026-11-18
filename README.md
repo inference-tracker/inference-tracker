@@ -20,7 +20,7 @@ inference_tracker.init("https://<key>@<host>", environment="prod")
 ```
 
 That's all: `init()` attaches to the SDKs the app uses (openai, google-genai, LiteLLM, fal_client, and
-plain `httpx` and `requests` sessions to fal, eachlabs, Pruna and Modal), so every client is tracked,
+plain `httpx` and `requests` sessions to fal, eachlabs, Pruna, Modal and OpenAI), so every client is tracked,
 wherever and whenever it's made. Nothing to wrap.
 
 The key can only send records, so it may be written in the code of a private repo. Set
@@ -183,6 +183,12 @@ else there is no usage), and copies made with `with_options`. An OpenAI client p
 (`base_url="https://aiplatform.googleapis.com/v1beta1/projects/<p>/locations/<l>/endpoints/openapi"`)
 is recorded as Vertex, with its project and location. Works with the OpenAI Agents SDK: pass the
 tracked `AsyncOpenAI` to `set_default_openai_client` or to a model.
+
+Calls to OpenAI's API made without the `openai` package (`httpx.post("https://api.openai.com/v1/decisions",
+...)`, or with `requests`) are recorded too, once `init()` has attached: one record per POST to an inference
+endpoint, with the model, the usage the answer reports and the `x-request-id`. A streamed one is recorded
+without usage, since its answer isn't read. With `attach=False`, watch the session yourself:
+`inference_tracker.openai.track_http(httpx.Client())`.
 
 ## Google (the `google-genai` package)
 

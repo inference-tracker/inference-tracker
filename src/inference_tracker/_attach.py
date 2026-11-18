@@ -5,8 +5,8 @@ it's made: nothing to wrap, and a call added later is recorded without anyone re
   lead to inference calls (client.chat, client.models...) are looked up through the same wrappers track() uses.
   Clients made by LiteLLM are left alone: LiteLLM's own callback records those calls.
 - Plain HTTP (httpx.Client, httpx.AsyncClient, requests.Session): each session is watched on its first request
-  for the providers tracked over HTTP: fal (fal_client's own session included), eachlabs, Pruna and Modal web
-  endpoints. Other hosts pass through unseen.
+  for the providers tracked over HTTP: fal (fal_client's own session included), eachlabs, Pruna, Modal web
+  endpoints, and OpenAI's API called without the openai package. Other hosts pass through unseen.
 - LiteLLM: its callback is added (litellm.track()).
 
 A package imported after init() is attached to when it's imported. Only the class is changed, in memory: the app's
@@ -198,7 +198,7 @@ def _skip_litellm_made(cls: type) -> None:
 
 def watchers() -> list[_http.Watcher]:
     """The watchers every session gets, one per provider tracked over HTTP."""
-    from . import eachlabs, fal, modal, pruna
+    from . import eachlabs, fal, modal, openai, pruna
 
     with _lock:
         global _watchers
@@ -208,6 +208,7 @@ def watchers() -> list[_http.Watcher]:
                 eachlabs._HttpWatcher(eachlabs.SETTINGS),
                 pruna._HttpWatcher(pruna.SETTINGS),
                 modal._HttpWatcher(()),
+                openai._HttpWatcher(),
             ]
         return _watchers
 

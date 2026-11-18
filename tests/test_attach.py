@@ -181,6 +181,103 @@ def test_a_package_that_changed_is_skipped_with_a_warning(sent, monkeypatch, cap
     assert any("couldn't attach to json" in r.getMessage() for r in caplog.records)
 
 
+# --- OpenAI's API called without the openai package -----------------------------------------------------------
+
+DECISION = {
+    "model": "gpt-6-luna",
+    "answers": [{"type": "predicate", "name": "safe", "probability": 0.97}],
+    "usage": {
+        "input_tokens": 40,
+        "input_tokens_details": {"cached_tokens": 8, "cache_write_tokens": 0},
+        "output_tokens": 1,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 41,
+    },
+}
+
+
+def openai_over_http(*answers, status=200):
+    seen = []
+
+    def answer(request):
+        seen.append(request)
+        body = answers[len(seen) - 1]
+        return httpx.Response(status, headers={"x-request-id": f"req_{len(seen)}"}, json=body)
+
+    return httpx.Client(transport=httpx.MockTransport(answer)), seen
+
+
+def decide(http):
+    return http.post(
+        "https://api.openai.com/v1/decisions",
+        json={"model": "gpt-6-luna", "input": "a cat", "questions": [{"type": "predicate", "instructions": "safe?"}]},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+
+
+def test_a_plain_http_call_to_openai_is_recorded(sent):
+    http, _ = openai_over_http(DECISION)
+    with context(user_id="u1"):
+        assert decide(http).json()["answers"][0]["probability"] == 0.97
+    [r] = sent
+    assert (r.provider, r.model, r.request_id, r.user_id, r.status) == ("openai", "gpt-6-luna", "req_1", "u1", "ok")
+    assert r.units == {"input_tokens": 40, "output_tokens": 1, "cached_input_tokens": 8, "cache_write_input_tokens": 0,
+                       "reasoning_tokens": 0}  # fmt: skip
+    assert r.code[0] == "test_attach.decide"
+
+
+def test_a_plain_http_chat_completion_reads_its_usage_its_own_way(sent):
+    http, _ = openai_over_http(CHAT)
+    http.post("https://api.openai.com/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": []})
+    assert [(r.request_id, r.units["input_tokens"], r.units["output_tokens"]) for r in sent] == [("chatcmpl-1", 5, 2)]
+
+
+def test_a_refused_plain_http_call_is_recorded_with_openai_s_code(sent):
+    http, _ = openai_over_http({"error": {"code": "rate_limit_exceeded", "message": "slow down"}}, status=429)
+    decide(http)
+    assert [(r.status, r.error_type, r.request_id) for r in sent] == [("error", "rate_limit_exceeded", "req_1")]
+
+
+def test_a_plain_http_call_over_requests_is_recorded(sent):
+    class OpenAIAdapter(requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):
+            r = requests.Response()
+            r.status_code, r.request, r.url = 200, request, request.url
+            r.headers["x-request-id"] = "req_9"
+            r._content = __import__("json").dumps(DECISION).encode()
+            return r
+
+        def close(self):
+            pass
+
+    http = requests.Session()
+    http.mount("https://", OpenAIAdapter())
+    decide(http)
+    assert [(r.model, r.request_id) for r in sent] == [("gpt-6-luna", "req_9")]
+
+
+def test_requests_to_openai_that_are_not_calls_pass_unseen(sent):
+    http, _ = openai_over_http({}, {}, {})
+    http.post("https://api.openai.com/v1/files", files={"file": ("a.jsonl", b"{}")})
+    http.post("https://api.openai.com/v1/responses/resp_1/cancel")
+    http.get("https://api.openai.com/v1/models")
+    assert sent == []
+
+
+def test_a_streamed_plain_http_call_is_recorded_without_reading_the_stream(sent):
+    http, _ = openai_over_http({})
+    with http.stream("POST", "https://api.openai.com/v1/responses", json={"model": "gpt-5.4-mini", "stream": True}):
+        assert sent[0].units == {}  # recorded when the answer's headers came, nothing read
+    assert [(r.model, r.request_id) for r in sent] == [("gpt-5.4-mini", "req_1")]
+
+
+def test_a_call_litellm_makes_over_http_is_left_to_litellm(sent):
+    http, _ = openai_over_http(DECISION)
+    made_by_litellm = {"__name__": "litellm.llms.custom_httpx", "decide": decide, "http": http}
+    exec("decide(http)", made_by_litellm)  # noqa: S102
+    assert sent == []
+
+
 # --- fal: fal_client's own session is watched over HTTP ---------------------------------------------------------
 
 fal_client = pytest.importorskip("fal_client")

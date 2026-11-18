@@ -16,7 +16,8 @@ images.generate / edit, and a raw client.post() to an images route ("/images/gen
 with_raw_response and with_streaming_response versions of responses, chat.completions, embeddings and
 moderations .create are tracked too, when the app parses the answer (response.parse()), which is how the
 OpenAI Agents SDK streams. A copy of the client (with_options, copy) is tracked like the client.
-Everything else passes through unchanged. The call itself is never changed, and tracking never raises: a
+Calls made over plain HTTP, without the openai package, are recorded too (see the end of this
+file). Everything else passes through unchanged. The call itself is never changed, and tracking never raises: a
 problem in it is logged and the call goes on.
 
 When the app stops waiting (its task is cancelled, or a timeout around the call runs out), the call is recorded
@@ -617,3 +618,119 @@ def _as_vertex(units: dict[str, float], total: Any, call: _Call) -> dict[str, fl
     if inp is not None and call.text_in:
         out["input_text_tokens"] = inp
     return out
+
+
+# --- over plain HTTP ---------------------------------------------------------------------------------
+#
+# An app may call OpenAI's API without the openai package: httpx.post("https://api.openai.com/v1/decisions",
+# json=..., headers=...). Once init() has attached, every httpx and requests session is watched (see _attach),
+# and a POST to OpenAI's API is recorded as one "call", the same as the wrapper records it: the model and the
+# usage the answer reports, the settings that change the price, the x-request-id header as the request id when
+# the answer has no id. An endpoint added after this was written is recorded too, since every inference
+# endpoint is a POST and reports its usage the same way.
+#
+# Requests the openai package sends (its X-Stainless-Lang header says so) are left to the wrapper, and those
+# LiteLLM sends are left to LiteLLM's callback: each call is recorded once. So are files, uploads, batches,
+# fine-tuning, vector stores and other requests that aren't an inference call. A streamed request
+# ("stream": true) is recorded without usage: its answer is never read here, so the app gets the stream as it
+# comes.
+
+HOSTS = ("api.openai.com",)  # and regional ones: eu.api.openai.com
+# First part of the path (after /v1) of requests that aren't an inference call.
+_NOT_CALLS = frozenset(
+    {
+        "files", "uploads", "batches", "fine_tuning", "vector_stores", "containers", "assistants", "threads",
+        "organization", "projects", "evals", "conversations", "chatkit", "models", "realtime",
+    }
+)  # fmt: skip
+# The wrapper's path for each endpoint whose usage is read its own way; any other reads like responses.
+_ENDPOINTS = {"chat": ("chat",), "completions": ("chat",), "embeddings": ("embeddings",), "images": ("images",)}
+_ENDPOINTS["moderations"] = ("moderations",)
+
+
+def track_http(client: Any) -> Any:
+    """Watches an httpx.Client, httpx.AsyncClient or requests.Session for calls to OpenAI's API made without the
+    openai package, and returns the same client. Only needed with init(attach=False): otherwise every session is
+    watched already."""
+    from . import _http
+
+    try:
+        if not _http.watch(client, _HttpWatcher()):
+            logger.warning("inference_tracker: can't watch a %s for openai calls", type(client).__name__)
+    except Exception:
+        logger.exception("inference_tracker: could not watch a client for openai calls")
+    return client
+
+
+class _HttpWatcher:
+    name = "openai"
+
+    def accepts(self, host: str) -> bool:
+        return host in HOSTS or host.endswith(".api.openai.com")
+
+    def wants_body(self, ex: Any) -> bool:
+        return self._path(ex) is not None and not _streamed(ex)
+
+    def seen(self, ex: Any) -> None:
+        path = self._path(ex)
+        if path is None:
+            return
+        body = ex.request_json()
+        call = _start(_Where(OPENAI), body if isinstance(body, dict) else {})
+        if call is None:
+            return
+        call.clock = ex.clock
+        call.record.started_at = ex.started_at
+        answer = ex.body if isinstance(ex.body, dict) else {}
+        error_type = None
+        if not ex.ok:
+            error_type = code(get(answer, "error", "code")) or code(get(answer, "error", "type")) or f"http_{ex.status}"
+            answer = {}
+        if not get(answer, "id"):
+            answer = {**answer, "id": ex.headers.get("x-request-id")}  # the Decisions API's answer has no id
+        _end(call, path, answer, None, error_type)
+
+    def failed(self, ex: Any) -> None:
+        path = self._path(ex)
+        if path is None:
+            return
+        body = ex.request_json()
+        call = _start(_Where(OPENAI), body if isinstance(body, dict) else {})
+        if call is not None:
+            call.clock = ex.clock
+            call.record.started_at = ex.started_at
+            _end(call, path, None, ex.error)
+
+    def _path(self, ex: Any) -> Path | None:
+        """The wrapper's path for this request, None when it isn't an inference call this watcher records."""
+        try:
+            if ex.method != "POST" or ex.request_headers.get("x-stainless-lang") is not None or _from_litellm():
+                return None
+            parts = [p for p in ex.path.split("/") if p]
+            if parts and parts[0].startswith("v") and parts[0][1:].isdigit():
+                parts = parts[1:]
+            if not parts or parts[0] in _NOT_CALLS or parts[-1] == "cancel":
+                return None
+            return _ENDPOINTS.get(parts[0], ("responses",))
+        except Exception:
+            return None
+
+
+def _streamed(ex: Any) -> bool:
+    body = ex.request_json()
+    return isinstance(body, dict) and bool(body.get("stream"))
+
+
+def _from_litellm() -> bool:
+    """Whether LiteLLM is making this request: its callback records the call."""
+    try:
+        import sys
+
+        f = sys._getframe(1)
+        while f is not None:
+            if str(f.f_globals.get("__name__", "")).startswith("litellm"):
+                return True
+            f = f.f_back
+    except Exception:
+        pass
+    return False
