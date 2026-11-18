@@ -147,6 +147,21 @@ inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "tes
 - **Serverless functions that freeze between requests** (Cloud Functions, Lambda): pass
   `background=False`, and `flush=True` on the context, so records are sent before the function ends.
 - Local emulators often run with dummy secrets: send nothing there.
+- **Leave a note for whoever adds the next AI call.** Coding agents read the repo's instructions file, so
+  add a short section to it in the same pull request: `AGENTS.md`, or `CLAUDE.md` if that's what the repo
+  has (`AGENTS.md` if neither). Point at this repo's own code, not at this guide. For example:
+
+  ```markdown
+  ## AI calls are tracked
+
+  AI calls are recorded with inference-tracker (`app/tracker.py`). When you add one:
+  - make the client the way `app/llm.py` does, so it is tracked;
+  - where new work starts (a handler, a worker), say who it's for:
+    `with inference_tracker.context(user_id=..., task_id=...):`
+  ```
+
+  Keep it to what someone adding a call must do. Match the file's style and language. If the repo already
+  has the section, update it instead of adding a second one.
 
 ## 5. Deploy to test, and look at the records
 
