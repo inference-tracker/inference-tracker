@@ -1,6 +1,6 @@
 """inference_tracker: records each inference call with who it was for."""
 
-from . import fal, google, litellm, modal, openai, pruna
+from . import eachlabs, fal, google, litellm, modal, openai, pruna
 from ._client import Client, flush, init, record, shutdown
 from ._context import Context, context, current
 from ._record import Record, error_name
@@ -12,6 +12,7 @@ __all__ = [
     "Record",
     "context",
     "current",
+    "eachlabs",
     "error_name",
     "fal",
     "google",
