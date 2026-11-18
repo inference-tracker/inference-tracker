@@ -148,8 +148,11 @@ inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "tes
   `background=False`, and `flush=True` on the context, so records are sent before the function ends.
 - Local emulators often run with dummy secrets: send nothing there.
 - **Leave a note for whoever adds the next AI call.** Coding agents read the repo's instructions file, so
-  add a short section to it in the same pull request: `AGENTS.md`, or `CLAUDE.md` if that's what the repo
-  has (`AGENTS.md` if neither). Point at this repo's own code, not at this guide. For example:
+  add a short section to it in the same pull request. `AGENTS.md` is read by most coding agents, Claude
+  Code included, but Claude Code skips it when a `CLAUDE.md` exists (checked 2026-11-18). So: `AGENTS.md`
+  when the repo has no `CLAUDE.md` (create it if neither exists); `CLAUDE.md` when it has one, unless that
+  file only imports `AGENTS.md` (`@AGENTS.md`). Point at this repo's own code, not at this guide. For
+  example:
 
   ```markdown
   ## AI calls are tracked
