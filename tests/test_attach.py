@@ -243,3 +243,16 @@ def test_a_genai_client_nobody_wrapped_is_recorded(sent):
     )
     client.models.embed_content(model="gemini-embedding-001", contents=["a", "b"])
     assert [(r.provider, r.model) for r in sent] == [("gcp.gemini", "gemini-embedding-001")]
+
+
+def test_a_replaced_httpx_client_name_still_attaches_to_the_real_class(monkeypatch):
+    each = FakeEachlabs()
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(**{**kw, "transport": httpx.MockTransport(each.httpx)}))
+    monkeypatch.setattr(_attach, "_done", set(_attach._done) - {"httpx"})
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
+    _attach.attach()
+    httpx.Client().post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {}})
+    assert [r.phase for r in out] == ["start"]

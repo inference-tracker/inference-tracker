@@ -63,17 +63,18 @@ def _google() -> None:
 
 
 def _httpx() -> None:
-    import httpx
+    # The classes where httpx defines them: httpx.Client may have been replaced (a test's stand-in, say).
+    from httpx import _client as httpx_client
 
-    _sessions(httpx.Client, "send", is_async=False)
-    _sessions(httpx.AsyncClient, "send", is_async=True)
+    _sessions(httpx_client.Client, "send", is_async=False)
+    _sessions(httpx_client.AsyncClient, "send", is_async=True)
 
 
 def _requests() -> None:
-    import requests
+    from requests import sessions
 
-    _sessions(requests.Session, "request", is_async=False)  # before the request is prepared: its hooks come from here
-    _sessions(requests.Session, "send", is_async=False)
+    _sessions(sessions.Session, "request", is_async=False)  # before the request is prepared: its hooks come from here
+    _sessions(sessions.Session, "send", is_async=False)
 
 
 def _litellm() -> None:
