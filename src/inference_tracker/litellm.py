@@ -67,7 +67,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from . import _client
+from . import _client, _code
 from ._context import Context
 from ._context import current as _current_context
 from ._proxy import get, number, put
@@ -123,6 +123,7 @@ class _Open:
     stream: bool
     kwargs: Any = None  # LiteLLM's own dict for the call, kept only for an async call, to record it if cancelled
     answered: float | None = None  # time.monotonic() when the provider's answer came (LiteLLM's post-call hook)
+    code: list[str] | None = None  # the app's functions that made the call, taken where it was made
 
 
 _open: OrderedDict[str, _Open] = OrderedDict()
@@ -203,6 +204,7 @@ def _before(kwargs: Any) -> None:
             api_base if isinstance(api_base, str) else None,
             sync=isinstance(call_type, str) and not call_type.startswith("a"),
             stream=get(kwargs, "stream") is True,
+            code=_code.functions() or None,
         )
         task = None
         if call_type in CALL_TYPES and not call.sync and not call.stream:
@@ -350,6 +352,7 @@ def _after(
                 "parent_provider": ctx.parent_provider,
                 "parent_request_id": ctx.parent_request_id,
                 "call_name": ctx.call_name,
+                "code": call.code if call is not None else None,
             }
         started, ended = _seconds(start_time), _seconds(end_time)
         record = Record.new(

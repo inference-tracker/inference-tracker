@@ -26,6 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from . import _code
 from ._context import current as _current_context
 
 Phase = Literal["call", "start", "finish"]
@@ -66,6 +67,9 @@ class Record:
     parent_request_id: str | None = None
     # Which call in the app's code made it ("prompt-suggestions"), from the current context.
     call_name: str | None = None
+    # Which of the app's functions made the call, nearest first (see _code). Not on a "finish" record: its
+    # "start" has it. How the product tells calls apart; their names are given there.
+    code: list[str] | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)  # lets the server drop duplicates
     recorded_at: float = field(default_factory=time.time)
 
@@ -77,6 +81,8 @@ class Record:
         fields.setdefault("parent_provider", ctx.parent_provider)
         fields.setdefault("parent_request_id", ctx.parent_request_id)
         fields.setdefault("call_name", ctx.call_name)
+        if "code" not in fields and fields.get("phase", "call") != "finish":
+            fields["code"] = _code.functions() or None
         return cls(provider=provider, model=model, **fields)
 
     def to_wire(self) -> dict:
@@ -100,6 +106,7 @@ class Record:
             "parent_provider": self.parent_provider,
             "parent_request_id": self.parent_request_id,
             "call_name": self.call_name,
+            "code.functions": [str(f)[:300] for f in self.code[: _code.DEPTH]] if self.code else None,
         }
         return {k: v for k, v in wire.items() if v is not None and v != {}}
 
