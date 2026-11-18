@@ -69,13 +69,8 @@ with inference_tracker.context(user_id=user_id, task_id=task_id):
     ...  # every tracked call in here gets this user and task
 ```
 
-**Name each call** with its name from the list, as close to the call as the code allows: around the
-line that makes the call, or where it's called from when one function serves several named calls.
-
-```python
-with inference_tracker.context(call_name="prompt-suggestions"):
-    suggestions = service.suggest(edit)
-```
+Don't name calls in the code. Each record carries the app's functions that made the call, and the product
+names calls from those (a person can rename them there). A `call_name` already in the code keeps working.
 
 Use the app's own stable user id (the one its analytics and payments use). Never an email. A call
 made before the task exists (moderating the prompt that creates it) is recorded with the user only.
@@ -96,51 +91,55 @@ call to its **parent** instead, and the dashboard finds the user by walking up t
   (only to `workflows/...` addresses). The result then lists each step, and each step is recorded
   with the run as its parent. The app must read `output` from the result.
 
-## 3. Wrap the clients
+## 3. Clients are tracked by init()
 
-Wrap each client where it is created. The calls themselves don't change, and if recording fails the
-call still runs.
+`init()` attaches to the SDKs the app uses, so clients are made as usual, wherever and whenever:
+nothing to wrap, and a call added later is recorded too. Don't add `track()` around clients.
 
-| Package | Wrap with | Tracked |
-|---|---|---|
-| `fal_client` | `inference_tracker.fal.track(client)` | submit, subscribe, run, results, cancel; webhooks with `fal.webhook(body)` |
-| fal over plain HTTP (`httpx`, `requests`, a subclass of fal's clients) | `inference_tracker.fal.track_http(http)` | submits to `queue.fal.run` and their results, calls to `fal.run` |
-| `openai` (OpenAI, Azure, Foundry) | `inference_tracker.openai.track(client)` | responses, chat completions, images, raw `post` to an images route, embeddings, moderations, streams |
-| an `openai` client pointed at Vertex | `inference_tracker.openai.track(client)` | as above, recorded as Vertex with its project and location |
-| OpenAI Agents SDK | pass a tracked `AsyncOpenAI` to `set_default_openai_client` or to the model | every model call of a run |
-| `google-genai` | `inference_tracker.google.track(client)` | generate_content, images, Veo (start and finish), embed_content |
-| `vertexai` embeddings | `inference_tracker.google.track(TextEmbeddingModel...)` | get_embeddings |
-| `litellm` (Bedrock and every provider it routes to, the Agents SDK's `LitellmModel`) | `inference_tracker.litellm.track()`, once at startup | completions, embeddings, images, responses, streams |
-| Modal | `inference_tracker.modal.function(app, name)`; web endpoints with `modal.track_http(http, apps=[...])` | `remote()`, `spawn()` and its result, web endpoint calls |
-| Pruna (HTTP or `pruna_client`) | `inference_tracker.pruna.track_http(http)` | predictions (start and finish) |
-| eachlabs (HTTP) | `inference_tracker.eachlabs.track_http(http)` | predictions (start and finish, with their cost) |
+| Package | Tracked by `init()` |
+|---|---|
+| `openai` (OpenAI, Azure, Foundry, pointed at Vertex), the OpenAI Agents SDK | responses, chat completions, images, embeddings, moderations, streams |
+| `google-genai` | generate_content, images, Veo (start and finish), embed_content |
+| `litellm` (Bedrock and every provider it routes to) | completions, embeddings, images, responses, streams |
+| `fal_client`, or fal over plain HTTP (`httpx`, `requests`) | submits and their results, `fal.run` calls |
+| eachlabs, Pruna, Modal web endpoints, over `httpx` or `requests` | predictions and calls, start and finish |
 
-The README has the details of each. Wrap a call once: not both `track()` and `track_http()` on fal,
-and no tracked `openai` client handed to LiteLLM, or the call is recorded twice.
+Still added by hand, where the code needs them:
 
-A call the wrappers don't cover (another SDK, raw HTTP to another provider): add a wrapper to the
-library, with tests, in its own pull request, rather than recording it by hand in the app. Record by
-hand (`inference_tracker.record(...)`) only as a stopgap, and say so in the PR.
+| Case | Add |
+|---|---|
+| fal results sent to a webhook | `inference_tracker.fal.webhook(body)` in the handler |
+| Modal `remote()` / `spawn()` | `inference_tracker.modal.function(app, name)` instead of `modal.Function.from_name` |
+| Modal web endpoints, to name the app | `inference_tracker.modal.track_http(http, apps=[...])` once (any session: the names reach all) |
+| `vertexai` embeddings | `inference_tracker.google.track(TextEmbeddingModel...)` |
 
-Check what each wrapper records against the call's real response: run it once against the real
-SDK with a fake network, and look at the record. Usage the bill is split by (tokens by kind, seconds
-of video, images) must be there.
+A repo tracked with an older version may wrap clients with `track()` or `track_http()`: that still works
+and records each call once. When you're there anyway, remove the wrappers.
+
+A call nothing covers (another SDK, raw HTTP to another provider): add it to the library, with tests, in
+its own pull request, rather than recording it by hand in the app. Record by hand
+(`inference_tracker.record(...)`) only as a stopgap, and say so in the PR.
+
+Check what is recorded against the call's real response: run it once against the real SDK with a fake
+network, and look at the record. Usage the bill is split by (tokens by kind, seconds of video, images) must
+be there.
 
 ## 4. Start the tracker
 
-Once per process, at startup:
+Once per process, at startup, with the string the product gives when a key is made:
 
 ```python
-inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "test")
+inference_tracker.init("https://<key>@<host>", environment="prod" or "test")
 ```
 
-- One key per app. It can only send records, so in a private repo it may be written in the code. In a
-  public repo it comes from a secret (`INFERENCE_TRACKER_KEY`). A value set in the environment wins over
-  the one in the code. Without a key nothing is sent and the app runs as before.
-- **Where the key is a secret bound to a function, it must exist in every project its branch deploys
-  to** (test and production) before the pull request is merged, or the deploy fails. Say so in the PR.
-- **fal apps:** fal secrets are shared by the whole account, so one secret serves the app's test and
-  production versions. Add the library to the package list each app installs from (often its own
+- One key per project. It can only send records, so in a private repo it's written in the code: no secret
+  to set, and nothing to change at deploy. In a public repo the whole string comes from the environment
+  (`INFERENCE_TRACKER_DSN`, which always wins over the code). Without it nothing is sent and the app runs
+  as before.
+- **Moving a repo off an older setup:** remove the old key secret from every function it's bound to
+  (`INFERENCE_TRACKER_KEY`, `INFERENCE_TRACKER_URL`), and the address constant and app name. The string
+  replaces them; the old variables no longer change where records go.
+- **fal apps:** add the library to the package list each app installs from (often its own
   list, not the repo's main one). Code fal ships with the app but doesn't install (the app's own
   helper folders) must be imported at the top of the file, not inside a method.
 - Calls made on another thread or a background loop must still see the user and task: check one.
@@ -158,7 +157,7 @@ inference_tracker.init(url=..., key=..., app="MyApp", environment="prod" or "tes
   ## AI calls are tracked
 
   AI calls are recorded with inference-tracker (`app/tracker.py`). When you add one:
-  - make the client the way `app/llm.py` does, so it is tracked;
+  - clients are tracked automatically once `init()` has run (`app/tracker.py`): make them as usual;
   - where new work starts (a handler, a worker), say who it's for:
     `with inference_tracker.context(user_id=..., task_id=...):`
   ```

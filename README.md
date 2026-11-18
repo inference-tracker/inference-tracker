@@ -11,17 +11,27 @@ Early work in progress. Python 3.10 or newer, no other packages needed.
 
 ## Setup
 
+One line at startup, with the string you get when you make a key (the address, with the key in it):
+
 ```python
 import inference_tracker
 
-inference_tracker.init(url="https://.../ingest", key="...", app="myapp")
+inference_tracker.init("https://<key>@<host>", environment="prod")
 ```
 
-Or set `INFERENCE_TRACKER_URL`, `INFERENCE_TRACKER_KEY` and `INFERENCE_TRACKER_APP` (and optionally
-`INFERENCE_TRACKER_ENVIRONMENT`, e.g. `prod`). The key can only send records, so it may be written in the
-code of a private repo. If `INFERENCE_TRACKER_URL` or `INFERENCE_TRACKER_KEY` is set, it wins over the
-value in the code. Without url, key and app, nothing is sent and every call
-below does nothing: no answer is read, no body parsed.
+That's all: `init()` attaches to the SDKs the app uses (openai, google-genai, LiteLLM, fal_client, and
+plain `httpx` and `requests` sessions to fal, eachlabs, Pruna and Modal), so every client is tracked,
+wherever and whenever it's made. Nothing to wrap.
+
+The key can only send records, so it may be written in the code of a private repo. Set
+`INFERENCE_TRACKER_DSN` to replace the whole string without changing the code (a public repo sets it
+there and calls `init()` with nothing). No other variable changes where records go. Without a string,
+nothing is sent and every call below does nothing: no answer is read, no body parsed.
+`INFERENCE_TRACKER_ENVIRONMENT` fills in the environment when it isn't passed. Pass `attach=False` to
+wrap clients yourself instead (below).
+
+The older form, `init(url=..., key=..., app=...)`, still works, with `INFERENCE_TRACKER_URL`,
+`INFERENCE_TRACKER_KEY` and `INFERENCE_TRACKER_APP` winning over it as before.
 
 `init()` can be called at startup or at the start of every request, from any number of threads at
 once: called again with the same values, it returns the client already running and does nothing else.
@@ -64,20 +74,20 @@ with inference_tracker.context(parent_provider="fal", parent_request_id=rid):
     ...
 ```
 
-Name each call where it is made, so two places that use the same model (an agent that plans an edit,
-and prompt suggestions, both on one Gemini model) can be told apart, and cost can be shown per call.
-Short, lowercase, with dashes; the name stays the same when the code moves:
-
-```python
-with inference_tracker.context(call_name="prompt-suggestions"):
-    ...
-```
+Calls aren't named in the code. Each record carries the app's functions that made it, nearest first
+(`code.functions`), which tells apart two places that use the same model; names are given in the
+product. A name already set with `context(call_name="prompt-suggestions")` keeps working.
 
 A result read later, somewhere else, keeps the name its call was made with.
 
+## Wrapping clients yourself
+
+`init()` already tracks the clients below. The `track()` wrappers in each section stay for code written
+before 0.9.0 and for `init(..., attach=False)`; a wrapped client is still recorded once.
+
 ## fal
 
-Wrap the client once, then call it as before.
+Without `init()`'s tracking, wrap the client once, then call it as before.
 
 ```python
 import fal_client

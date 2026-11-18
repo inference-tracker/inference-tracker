@@ -140,7 +140,7 @@ Questions are asked fresh.
 
 | Field | What to write |
 |---|---|
-| Name | what the call does for the product, short, lowercase, with dashes: `prompt-suggestions`, `edit-planning-agent`, `photo-edit`. Unique in the app, and the same when the code moves: the app's records carry it (`context(call_name=...)`), so cost can be shown per call. A name the code already sets, or one from an older list for the same call, is kept |
+| Name | what the call does for the product, short, lowercase, with dashes: `prompt-suggestions`, `edit-planning-agent`, `photo-edit`. Unique in the app, and the same when the code moves: the product uses it as the call's starting name (records tell calls apart by the functions that made them). A name the code already sets, or one from an older list for the same call, is kept |
 | Where | `file:line` (the line that sends the call), the function, and that line's text copied exactly |
 | Provider and model | as the code names them. A model from a variable: say where the value comes from |
 | How it's called | SDK (which package), raw HTTP, through a layer (Agents SDK, LiteLLM...), or the provider is picked at runtime (from where) |
@@ -175,11 +175,13 @@ in a way that can slow the app's own work (waiting on the send before answering)
 
 **Is it really tracked?** Check all of these, in the repo's own code and the library version it pins:
 
-- the wrapper covers this exact method and route (read the library's module docs or source, not only
+- the library covers this exact method and route (read the library's module docs or source, not only
   its README);
-- the client this call uses is the wrapped one (an SDK that builds its own clients, or a subclass,
-  may escape the wrapper);
-- the tracker is started in that process, and its key reaches it (each function's secrets);
+- from 0.9.0, `init()` attaches to the SDKs it covers, so any client is tracked once `init()` has run in
+  that process. Before 0.9.0, the client this call uses must be the wrapped one (an SDK that builds its
+  own clients, or a subclass, may escape the wrapper);
+- the tracker is started in that process, and its key reaches it (in the code from 0.9.0; before, often
+  each function's secrets);
 - the user and task are set around the call, or its parent is (for the app's own serverless apps).
 
 ## 4. List the machines the app runs
