@@ -63,7 +63,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from . import _client, _http
+from . import _attach, _bypass, _client, _http
 from ._context import Context, context, current
 from ._record import Record, cancelled, code, error_name
 
@@ -615,6 +615,11 @@ class _AsyncClient(_Client):
         return result
 
 
+# Calls these wrappers record themselves aren't recorded again by the HTTP tracking attached at init().
+for _cls in (_Client, _AsyncClient, _Handle, _AsyncHandle):
+    _bypass.methods(_cls)
+
+
 # --- over plain HTTP ---------------------------------------------------------------------------------
 
 QUEUE_HOSTS = frozenset({"queue.fal.run", "queue.falrun.com"})  # with the backup domain fal_client falls back to
@@ -659,6 +664,7 @@ def track_http(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     track_http() on one client, not both, or calls are recorded twice. For a fal_client.AsyncClient (or a
     subclass), whose session is made on first use, pass the session: track_http(await client._client)."""
     watcher = _HttpWatcher(settings)
+    _attach.learn(watcher)
     try:
         if _http.watch(client, watcher):
             return client

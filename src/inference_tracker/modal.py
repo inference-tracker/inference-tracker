@@ -51,7 +51,7 @@ from contextlib import contextmanager
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import _client, _http
+from . import _attach, _client, _http
 from ._context import Context, context, current
 from ._record import Record, cancelled, error_name
 
@@ -310,7 +310,9 @@ def track_http(client: Any, *, apps: Iterable[str] = ()) -> Any:
     dashes: list the app names in `apps` and the model is "<app>/<function>"; a host that starts with none
     of them (a custom label) keeps the label as its model. A trailing "-dev" (modal serve) is dropped."""
     try:
-        if not _http.watch(client, _HttpWatcher(apps)):
+        watcher = _HttpWatcher(apps)
+        _attach.learn(watcher)
+        if not _http.watch(client, watcher):
             logger.warning("inference_tracker: can't watch a %s for Modal calls", type(client).__name__)
     except Exception:
         logger.exception("inference_tracker: could not watch a client for Modal calls")

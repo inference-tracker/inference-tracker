@@ -12,6 +12,8 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
+from ._bypass import bypass
+
 Path = tuple[str, ...]
 # Given the path, the original method and whether it is async, returns the method to use instead.
 Wrap = Callable[[Path, Callable[..., Any], bool], Callable[..., Any]]
@@ -25,7 +27,8 @@ class Proxy:
         object.__setattr__(self, "_path", path)
 
     def __getattr__(self, name: str) -> Any:
-        value = getattr(self._target, name)
+        with bypass():  # the client's own attribute, not the one attached at init(): recorded once, here
+            value = getattr(self._target, name)
         path = self._path + (name,)
         if path in self._paths and callable(value):
             return self._wrap(path, value, _is_async(value))

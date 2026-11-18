@@ -46,7 +46,7 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from . import _client, _http
+from . import _attach, _client, _http
 from ._proxy import get
 from ._record import Record, cancelled, code
 
@@ -95,6 +95,7 @@ def track_http(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     same client. A pruna_client.PrunaClient can be passed as it is: both of its httpx sessions (sync and async)
     are watched. See the module docstring."""
     watcher = _HttpWatcher(settings)
+    _attach.learn(watcher)
     try:
         if _http.watch(client, watcher):
             return client

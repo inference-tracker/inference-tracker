@@ -40,7 +40,7 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from . import _client, _http
+from . import _attach, _client, _http
 from ._record import Record, cancelled
 
 logger = logging.getLogger("inference_tracker")
@@ -93,7 +93,9 @@ def track_http(client: Any, *, settings: Iterable[str] = SETTINGS) -> Any:
     """Watches an httpx.Client, httpx.AsyncClient or requests.Session for calls to eachlabs' API, and returns the
     same client. See the module docstring."""
     try:
-        if not _http.watch(client, _HttpWatcher(settings)):
+        watcher = _HttpWatcher(settings)
+        _attach.learn(watcher)
+        if not _http.watch(client, watcher):
             logger.warning("inference_tracker: can't watch a %s for eachlabs calls", type(client).__name__)
     except Exception:
         logger.exception("inference_tracker: could not watch a client for eachlabs calls")

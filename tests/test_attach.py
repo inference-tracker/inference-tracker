@@ -1,0 +1,245 @@
+"""The tracking attached at init(): clients nobody wrapped are recorded, a wrapped one once, LiteLLM's not by us."""
+
+import asyncio
+import sys
+import textwrap
+
+import pytest
+
+openai = pytest.importorskip("openai")
+httpx = pytest.importorskip("httpx")
+requests = pytest.importorskip("requests")
+
+from test_eachlabs import Adapter, FakeEachlabs  # noqa: E402
+from test_openai_sdk import Server  # noqa: E402
+
+import inference_tracker  # noqa: E402
+from inference_tracker import _attach, context  # noqa: E402
+from inference_tracker import eachlabs as tracked_eachlabs  # noqa: E402
+from inference_tracker import openai as tracked_openai  # noqa: E402
+
+CHAT = {
+    "id": "chatcmpl-1",
+    "object": "chat.completion",
+    "created": 1,
+    "model": "gpt-4o-mini",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+}
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
+    _attach.attach()
+    return out
+
+
+def make_openai(server, cls=None):
+    cls = cls or openai.OpenAI
+    http = (httpx.AsyncClient if cls is openai.AsyncOpenAI else httpx.Client)(transport=httpx.MockTransport(server))
+    return cls(api_key="sk-test", http_client=http, max_retries=0)
+
+
+def ask(client):
+    return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_an_openai_client_nobody_wrapped_is_recorded(sent):
+    client = make_openai(Server(CHAT))
+    with context(user_id="u1"):
+        assert ask(client).choices[0].message.content == "hi"
+    assert [(r.provider, r.model, r.request_id, r.user_id) for r in sent] == [
+        ("openai", "gpt-4o-mini", "chatcmpl-1", "u1")
+    ]
+    assert sent[0].units["input_tokens"] == 5
+    assert sent[0].code[0] == "test_attach.ask"
+
+
+def test_a_client_made_before_init_is_recorded_too(monkeypatch):
+    client = make_openai(Server(CHAT))  # before attach(), as a module-level client would be
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: True)
+    _attach.attach()
+    ask(client)
+    assert len(out) == 1
+
+
+def test_an_async_client_and_copies_are_recorded(sent):
+    async def main():
+        client = make_openai(Server(CHAT, CHAT), openai.AsyncOpenAI)
+        await client.chat.completions.create(model="gpt-4o-mini", messages=[])
+        await client.with_options(timeout=5).chat.completions.create(model="gpt-4o-mini", messages=[])
+
+    asyncio.run(main())
+    assert len(sent) == 2
+
+
+def test_a_client_also_wrapped_with_track_is_recorded_once(sent):
+    client = tracked_openai.track(make_openai(Server(CHAT)))
+    ask(client)
+    assert len(sent) == 1
+
+
+def test_a_client_made_by_litellm_is_left_to_litellm(sent):
+    made_by_litellm = {"__name__": "litellm.llms.openai", "make": make_openai, "Server": Server, "CHAT": CHAT}
+    exec("client = make(Server(CHAT))", made_by_litellm)  # noqa: S102
+    ask(made_by_litellm["client"])
+    assert sent == []
+
+
+def test_nothing_is_recorded_without_init(monkeypatch):
+    out = []
+    monkeypatch.setattr(inference_tracker._client, "record", out.append)
+    monkeypatch.setattr(inference_tracker._client, "active", lambda: False)
+    _attach.attach()
+    ask(make_openai(Server(CHAT)))
+    assert out == []
+
+
+def test_a_plain_httpx_session_to_eachlabs_is_watched_on_its_first_request(sent):
+    each = FakeEachlabs()
+    http = httpx.Client(transport=httpx.MockTransport(each.httpx))  # never given to track_http
+    created = http.post(
+        "https://api.eachlabs.ai/v1/prediction", json={"model": "p-video-upscale", "input": {"duration": 5}}
+    ).json()
+    while http.get(f"https://api.eachlabs.ai/v1/prediction/{created['predictionID']}").json()["status"] != "success":
+        pass
+    assert [(r.phase, r.model, r.request_id) for r in sent] == [
+        ("start", "p-video-upscale", "pred-1"),
+        ("finish", "p-video-upscale", "pred-1"),
+    ]
+    assert sent[1].units["cost_usd"] == 0.1617
+
+
+def test_a_plain_async_httpx_session_is_watched(sent):
+    each = FakeEachlabs()
+
+    async def main():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(each.httpx)) as http:
+            await http.post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {}})
+
+    asyncio.run(main())
+    assert [r.phase for r in sent] == ["start"]
+
+
+def test_a_requests_session_is_watched(sent):
+    each = FakeEachlabs()
+    http = requests.Session()
+    http.mount("https://", Adapter(each))
+    http.post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {}})
+    assert [r.phase for r in sent] == ["start"]
+
+
+def test_track_http_settings_reach_sessions_nobody_wrapped(sent):
+    tracked_eachlabs.track_http(httpx.Client(), settings=("seed",))
+    each = FakeEachlabs()
+    http = httpx.Client(transport=httpx.MockTransport(each.httpx))
+    http.post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {"seed": 7, "duration": 5}})
+    assert sent[0].settings == {"seed": 7, "duration": 5}
+
+
+def test_a_session_given_to_track_http_is_recorded_once(sent):
+    each = FakeEachlabs()
+    http = tracked_eachlabs.track_http(httpx.Client(transport=httpx.MockTransport(each.httpx)))
+    http.post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {}})
+    assert len(sent) == 1
+
+
+def test_other_hosts_pass_unseen(sent):
+    http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    http.post("https://example.com/v1/prediction", json={})
+    assert sent == []
+
+
+def test_a_package_imported_later_is_attached_when_it_is(sent, tmp_path, monkeypatch):
+    (tmp_path / "itk_late_sdk.py").write_text(
+        textwrap.dedent("""
+        class Client:
+            pass
+    """)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    seen = []
+    monkeypatch.setitem(_attach.TARGETS, "itk_late_sdk", lambda: seen.append(sys.modules["itk_late_sdk"].Client))
+    _attach.attach()
+    import itk_late_sdk  # noqa: F401
+
+    assert len(seen) == 1
+
+
+def test_a_package_that_changed_is_skipped_with_a_warning(sent, monkeypatch, caplog):
+    def broken():
+        raise AttributeError("no such attribute")
+
+    monkeypatch.setitem(_attach.TARGETS, "json", broken)
+    monkeypatch.setattr(_attach, "_done", set(_attach._done) - {"json"})
+    _attach.attach()
+    assert any("couldn't attach to json" in r.getMessage() for r in caplog.records)
+
+
+# --- fal: fal_client's own session is watched over HTTP ---------------------------------------------------------
+
+fal_client = pytest.importorskip("fal_client")
+from test_fal_http import ARGS, RESULT, FakeFal  # noqa: E402
+
+from inference_tracker import fal as tracked_fal  # noqa: E402
+
+
+@pytest.fixture
+def fal(monkeypatch):
+    fake = FakeFal()
+    real_sync, real_async = httpx.Client, httpx.AsyncClient
+    transport = httpx.MockTransport(fake.httpx)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_sync(**{**kw, "transport": transport}))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_async(**{**kw, "transport": transport}))
+    return fake
+
+
+def test_a_fal_client_nobody_wrapped_is_recorded(fal, sent):
+    client = fal_client.SyncClient(key="test-key")
+    with context(user_id="u1"):
+        handle = client.submit("fal-ai/flux/dev", arguments=ARGS)
+        assert handle.get(interval=0) == RESULT
+    assert [(r.phase, r.model, r.request_id, r.user_id) for r in sent] == [
+        ("start", "fal-ai/flux/dev", "req-1", "u1"),
+        ("finish", "fal-ai/flux/dev", "req-1", "u1"),
+    ]
+
+
+def test_a_fal_client_wrapped_with_track_is_recorded_once(fal, sent):
+    client = tracked_fal.track(fal_client.SyncClient(key="test-key"))
+    assert client.subscribe("fal-ai/flux/dev", arguments=ARGS, interval=0) == RESULT
+    assert [(r.phase, r.request_id) for r in sent] == [("start", "req-1"), ("finish", "req-1")]
+
+
+def test_an_async_fal_client_nobody_wrapped_is_recorded(fal, sent):
+    async def main():
+        client = fal_client.AsyncClient(key="test-key")
+        handle = await client.submit("fal-ai/flux/dev", arguments=ARGS)
+        return await handle.get()
+
+    assert asyncio.run(main()) == RESULT
+    assert [r.phase for r in sent] == ["start", "finish"]
+
+
+# --- google-genai ----------------------------------------------------------------------------------------------
+
+genai = pytest.importorskip("google.genai")
+from google.genai import types  # noqa: E402
+from test_google_sdk import google as fake_google  # noqa: E402
+
+
+def test_a_genai_client_nobody_wrapped_is_recorded(sent):
+    transport = httpx.MockTransport(fake_google)
+    client = genai.Client(
+        api_key="test-key",
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=transport), httpx_async_client=httpx.AsyncClient(transport=transport)
+        ),
+    )
+    client.models.embed_content(model="gemini-embedding-001", contents=["a", "b"])
+    assert [(r.provider, r.model) for r in sent] == [("gcp.gemini", "gemini-embedding-001")]

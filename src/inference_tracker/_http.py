@@ -31,7 +31,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
-from . import _client
+from . import _bypass, _client
 from ._record import error_name
 
 logger = logging.getLogger("inference_tracker")
@@ -125,7 +125,7 @@ def _watch_failures(session: Any, watcher: Watcher) -> None:
 
     def failed(request: Any, started: tuple[float, float], error: BaseException) -> None:
         try:
-            if not _client.active():
+            if not _client.active() or _bypass.on():
                 return
             url = str(request.url)
             host = (urlsplit(url).hostname or "").lower()
@@ -187,7 +187,7 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
 
     def on_request(request: Any) -> None:
         try:
-            if _client.active() and watcher.accepts((request.url.host or "").lower()):
+            if _client.active() and not _bypass.on() and watcher.accepts((request.url.host or "").lower()):
                 with lock:
                     sent[request] = (time.time(), time.monotonic())
         except Exception:
@@ -197,7 +197,7 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
         """The exchange, and whether the watcher wants the answer's body."""
         try:
             request = response.request
-            if not _client.active() or not watcher.accepts((request.url.host or "").lower()):
+            if not _client.active() or _bypass.on() or not watcher.accepts((request.url.host or "").lower()):
                 return None, False
             with lock:
                 started = sent.pop(request, None)
@@ -248,7 +248,7 @@ def _watch_requests(session: Any, watcher: Watcher) -> bool:
     def on_response(response: Any, *args: Any, **kwargs: Any) -> None:
         try:
             request = response.request
-            if not _client.active() or not watcher.accepts((urlsplit(request.url).hostname or "").lower()):
+            if not _client.active() or _bypass.on() or not watcher.accepts((urlsplit(request.url).hostname or "").lower()):
                 return None
             elapsed = response.elapsed.total_seconds()  # requests times until the headers came
             ex = Exchange(request, response, request.url, (time.time() - elapsed, time.monotonic() - elapsed), elapsed)

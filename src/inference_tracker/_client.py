@@ -292,6 +292,7 @@ def init(
     client already running, so an app can call it at the start of every request instead of keeping a flag of
     its own. Other values replace the client (the old one sends what it has, without holding up the others)."""
     global _client, _settings
+    attach = options.pop("attach", True)
     env_dsn = os.environ.get(DSN_ENV)
     dsn = parse_dsn(env_dsn) if env_dsn else None
     if env_dsn and dsn is None:
@@ -321,6 +322,10 @@ def init(
         logger.warning("inference_tracker: no address and key set; records won't be sent")
     if old is not None:
         old.shutdown()  # outside the lock: calls that come meanwhile already see the new client
+    if new is not None and attach:
+        from . import _attach
+
+        _attach.attach()
     return new
 
 
