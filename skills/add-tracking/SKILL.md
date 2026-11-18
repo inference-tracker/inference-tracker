@@ -113,6 +113,7 @@ call still runs.
 | `litellm` (Bedrock and every provider it routes to, the Agents SDK's `LitellmModel`) | `inference_tracker.litellm.track()`, once at startup | completions, embeddings, images, responses, streams |
 | Modal | `inference_tracker.modal.function(app, name)`; web endpoints with `modal.track_http(http, apps=[...])` | `remote()`, `spawn()` and its result, web endpoint calls |
 | Pruna (HTTP or `pruna_client`) | `inference_tracker.pruna.track_http(http)` | predictions (start and finish) |
+| eachlabs (HTTP) | `inference_tracker.eachlabs.track_http(http)` | predictions (start and finish, with their cost) |
 
 The README has the details of each. Wrap a call once: not both `track()` and `track_http()` on fal,
 and no tracked `openai` client handed to LiteLLM, or the call is recorded twice.

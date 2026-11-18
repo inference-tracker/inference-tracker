@@ -260,7 +260,7 @@ isn't in `calls.md`. Exactly this shape; a field that doesn't apply is `null`:
   the row, not from memory: a program checks the number against the text, and moves it to the line
   where the text really is.
 - `provider`: the library's provider names where it has them (`fal`, `openai`, `azure.ai.openai`,
-  `gcp.vertex_ai`, `gcp.gemini`, `aws.bedrock`, `modal`, `pruna`), else the provider's own name.
+  `gcp.vertex_ai`, `gcp.gemini`, `aws.bedrock`, `modal`, `pruna`, `eachlabs`), else the provider's own name.
   `model`: as the code names it, or where the value is read from.
 - `result`: `direct`, `stream`, `queue_webhook`, `polled`, `database` or `inside_another_call`.
 - `who_for`: `user`, `task` (a task id only), `parent` (linked through the call that made it) or

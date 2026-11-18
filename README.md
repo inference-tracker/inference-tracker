@@ -236,6 +236,22 @@ record with Pruna's code (`VALIDATION_ERROR`...). The model is the `Model` heade
 on: the settings sent (duration, resolution, mode, draft, fps...) and how many reference images,
 videos and audio files went with it (counts, never the URLs). Downloads and uploads aren't recorded.
 
+## eachlabs
+
+For calls to eachlabs' API (`api.eachlabs.ai`) over plain HTTP:
+
+```python
+http = inference_tracker.eachlabs.track_http(httpx.AsyncClient())  # or httpx.Client, requests.Session
+```
+
+A prediction created with `POST /v1/prediction` is a "start" with eachlabs' prediction id, and the poll
+answer that says it ended (`success`, `error`, `cancelled`) is the "finish". A refused create is one
+record with `http_<status>`. The model is the body's `model` (`p-video-upscale`...), with its `version`
+in the settings. The finish keeps the prediction's cost as eachlabs reports it (`metrics.cost`, list
+price with any rebate off) as `cost_usd`, and on metered models `billed_seconds` and `output_gb`; plus
+the settings sent (duration, resolution...) and counts of reference media, never the URLs. Predictions
+answered to a webhook aren't seen finishing.
+
 ## What a record holds
 
 One record per call. A call whose result arrives somewhere else (a queued call, a webhook) gets two:
