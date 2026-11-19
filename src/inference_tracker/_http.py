@@ -177,6 +177,20 @@ def error_type(ex: Exchange) -> str | None:
     return error_name(ex.error) if ex.error is not None else None
 
 
+# Which watched session reports a request, per watcher: the first one it goes through. A session can send through
+# a transport with a session of its own inside (fal_client's retries on a backup domain that way), and the
+# request then passes both; the inner one stays quiet, or a call would be recorded twice.
+_owners: weakref.WeakKeyDictionary[Any, dict[str, int]] = weakref.WeakKeyDictionary()
+_owners_lock = threading.Lock()
+
+
+def _claim(request: Any, name: str, owner: int) -> bool:
+    """Whether this session (owner) reports the request for the watcher of that name: True for the first."""
+    with _owners_lock:
+        owners = _owners.setdefault(request, {})
+        return owners.setdefault(name, owner) == owner
+
+
 def _watch_httpx(session: Any, watcher: Watcher) -> bool:
     hooks = session.event_hooks
     if any(getattr(h, "_inference_tracker", None) == watcher.name for h in hooks.get("response", [])):
@@ -188,6 +202,8 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
     def on_request(request: Any) -> None:
         try:
             if _client.active() and not _bypass.on() and watcher.accepts((request.url.host or "").lower()):
+                if not _claim(request, watcher.name, id(sent)):
+                    return
                 with lock:
                     sent[request] = (time.time(), time.monotonic())
         except Exception:
@@ -201,6 +217,8 @@ def _watch_httpx(session: Any, watcher: Watcher) -> bool:
                 return None, False
             with lock:
                 started = sent.pop(request, None)
+            if started is None and not _claim(request, watcher.name, id(sent)):
+                return None, False  # reported by the session this one sent it through
             now = time.monotonic()
             started = started or (time.time(), now)
             ex = Exchange(request, response, str(request.url), started, now - started[1])

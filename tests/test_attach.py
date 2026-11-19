@@ -291,8 +291,10 @@ def fal(monkeypatch):
     fake = FakeFal()
     real_sync, real_async = httpx.Client, httpx.AsyncClient
     transport = httpx.MockTransport(fake.httpx)
-    monkeypatch.setattr(httpx, "Client", lambda **kw: real_sync(**{**kw, "transport": transport}))
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_async(**{**kw, "transport": transport}))
+    # fal_client's session sends through a transport that has a session of its own inside (to retry on a
+    # backup domain): only that inner session gets the fake, so a request goes through both, as it really does.
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_sync(**{**kw, "transport": kw.get("transport") or transport}))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_async(**{**kw, "transport": kw.get("transport") or transport}))
     return fake
 
 
