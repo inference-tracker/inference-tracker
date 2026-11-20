@@ -75,6 +75,15 @@ names calls from those (a person can rename them there). A `call_name` already i
 Use the app's own stable user id (the one its analytics and payments use). Never an email. A call
 made before the task exists (moderating the prompt that creates it) is recorded with the user only.
 
+When many functions wrap their whole body the same way, write it once: a small decorator in the app's
+tracker file that takes a function returning `(user_id, task_id)` from the arguments, put directly above
+the `def` so the whole body is inside. If finding the ids fails, log it and run the function anyway:
+tracking never changes what the app does. Don't leave private copies of each function behind.
+
+Work done for something other than the task at hand gets its own inner context with that thing's task
+(rebuilding an avatar's reference images during a generation belongs to the avatar, not the generation).
+What the inner context leaves out (the user) comes from the outer one.
+
 When the call happens somewhere that doesn't know the user, don't send the user id there. Link the
 call to its **parent** instead, and the dashboard finds the user by walking up the parents:
 
@@ -146,6 +155,9 @@ inference_tracker.init("https://<key>@<host>", environment="prod" or "test")
 - **Serverless functions that freeze between requests** (Cloud Functions, Lambda): pass
   `background=False`, and `flush=True` on the context, so records are sent before the function ends.
 - Local emulators often run with dummy secrets: send nothing there.
+- If the repo has a rule about what loads at start-up (a decision record on cold starts, lazy imports),
+  add a line to it: `init()` runs at start-up because clients made before it aren't tracked, and what that
+  costs (time and memory, measured). Otherwise someone moves it later to follow the rule.
 - **Leave a note for whoever adds the next AI call.** Coding agents read the repo's instructions file, so
   add a short section to it in the same pull request. `AGENTS.md` is read by most coding agents, Claude
   Code included, but Claude Code skips it when a `CLAUDE.md` exists (checked 2026-11-18). So: `AGENTS.md`
