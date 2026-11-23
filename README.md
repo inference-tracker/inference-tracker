@@ -11,7 +11,11 @@ Early work in progress. Python 3.10 or newer, no other packages needed.
 
 ## Setup
 
-One line at startup, with the string you get when you make a key (the address, with the key in it):
+```
+pip install "inference-tracker>=0.9.4,<1"
+```
+
+Then one line at startup, with the string you get when you make a key (the address, with the key in it):
 
 ```python
 import inference_tracker
@@ -277,7 +281,9 @@ request id.
 Each record has: provider, model, the provider's request id, status and error type (the error's
 class name or the provider's code, never its message: a provider's text that doesn't look like a
 code is left out), start time and duration, usage as the provider reports it, and the settings that
-change the price (copied by name, never the whole input). From the context: user, task, and the call
+change the price (copied by name, never the whole input), with where the call was billed: a Google
+project, an Azure resource, or for a provider that bills by key (OpenAI), the key's hint, its first 8
+and last 4 characters, as the provider's own key list shows them; never the key. From the context: user, task, and the call
 that made this one (`parent_provider` and `parent_request_id`, the provider's request id).
 
 ## When the app stops waiting
