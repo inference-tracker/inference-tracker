@@ -41,7 +41,10 @@ change the price (reasoning effort, service tier, image size, quality, count). N
 outputs. For Azure, settings also hold the resource the call went to (the first part of its host name),
 which is how its bill is split. For Vertex, they hold the project and location, the model is named as
 Vertex names it (without the "google/" prefix), and the tokens are named as the google wrapper names them
-(input_text_tokens, output_text_tokens, thinking_tokens...), so Vertex's bill is split the same way.
+(input_text_tokens, output_text_tokens, thinking_tokens...), so Vertex's bill is split the same way. For
+OpenAI's own API, they hold key_hint: the first 8 and last 4 characters of the API key, which OpenAI's own
+key list shows too. OpenAI bills by key, and a call names no key, so this is how a call is matched to the
+key that paid for it. Never the key itself.
 """
 
 from __future__ import annotations
@@ -96,7 +99,7 @@ _MEDIA = {"image_url", "input_image", "input_audio", "input_file", "file", "imag
 @dataclass
 class _Where:
     provider: str
-    place: dict[str, str] = field(default_factory=dict)  # azure_resource, or gcp_project and gcp_location
+    place: dict[str, str] = field(default_factory=dict)  # azure_resource; gcp_project and gcp_location; or key_hint
 
 
 @dataclass
@@ -460,7 +463,20 @@ def _where(client: Any) -> _Where:
             return _Where(AZURE, {"azure_resource": resource} if resource else {})
     except Exception:
         logger.debug("inference_tracker: could not read the openai client's base_url", exc_info=True)
-    return _Where(OPENAI)
+    hint = key_hint(getattr(client, "api_key", None))
+    return _Where(OPENAI, {"key_hint": hint} if hint else {})
+
+
+def key_hint(key: Any) -> str | None:
+    """The part of an API key a provider's own key list shows: its first 8 and last 4 characters
+    ("sk-proj-…a1b2"). Not secret, and enough to tell an account's keys apart. None for anything too short
+    to be a key, so the hint never gives away most of it."""
+    if not isinstance(key, str):
+        return None
+    key = key.strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    return f"{key[:8]}…{key[-4:]}" if len(key) >= 32 else None
 
 
 def _vertex_model(model: Any) -> Any:
@@ -662,6 +678,15 @@ def track_http(client: Any) -> Any:
     return client
 
 
+def _http_where(ex: Any) -> _Where:
+    """OpenAI, with the hint of the key the request sent."""
+    try:
+        hint = key_hint(ex.request_headers.get("authorization"))
+    except Exception:
+        hint = None
+    return _Where(OPENAI, {"key_hint": hint} if hint else {})
+
+
 class _HttpWatcher:
     name = "openai"
 
@@ -676,7 +701,7 @@ class _HttpWatcher:
         if path is None:
             return
         body = ex.request_json()
-        call = _start(_Where(OPENAI), body if isinstance(body, dict) else {})
+        call = _start(_http_where(ex), body if isinstance(body, dict) else {})
         if call is None:
             return
         call.clock = ex.clock
@@ -695,7 +720,7 @@ class _HttpWatcher:
         if path is None:
             return
         body = ex.request_json()
-        call = _start(_Where(OPENAI), body if isinstance(body, dict) else {})
+        call = _start(_http_where(ex), body if isinstance(body, dict) else {})
         if call is not None:
             call.clock = ex.clock
             call.record.started_at = ex.started_at

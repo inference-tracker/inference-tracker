@@ -1,6 +1,7 @@
 """The tracking attached at init(): clients nobody wrapped are recorded, a wrapped one once, LiteLLM's not by us."""
 
 import asyncio
+import json
 import sys
 import textwrap
 
@@ -358,3 +359,30 @@ def test_a_replaced_httpx_client_name_still_attaches_to_the_real_class(monkeypat
     _attach.attach()
     httpx.Client().post("https://api.eachlabs.ai/v1/prediction", json={"model": "m", "input": {}})
     assert [r.phase for r in out] == ["start"]
+
+
+LONG_KEY = "sk-proj-" + "x" * 40 + "a1b2"
+
+
+def test_a_call_records_the_hint_of_the_key_that_made_it_never_the_key(sent):
+    http = httpx.Client(transport=httpx.MockTransport(Server(CHAT)))
+    client = openai.OpenAI(api_key=LONG_KEY, http_client=http, max_retries=0)
+    ask(client)
+    [r] = sent
+    assert r.settings["key_hint"] == "sk-proj-…a1b2"
+    assert LONG_KEY not in json.dumps(r.settings)
+
+
+def test_a_plain_http_call_records_the_hint_of_its_key(sent):
+    http, _ = openai_over_http(CHAT)
+    http.post("https://api.openai.com/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": []},
+              headers={"Authorization": f"Bearer {LONG_KEY}"})  # fmt: skip
+    assert sent[0].settings["key_hint"] == "sk-proj-…a1b2"
+
+
+def test_a_short_key_gives_no_hint():
+    from inference_tracker.openai import key_hint
+
+    assert key_hint("sk-test") is None
+    assert key_hint(None) is None
+    assert key_hint("Bearer " + LONG_KEY) == "sk-proj-…a1b2"
